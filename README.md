@@ -55,7 +55,9 @@ Secrets and folders:
 mt serve
 ```
 
-Then open http://127.0.0.1:8766. Under **New session**, enter a URL, pick a mode and a duration, and click **Start**. Stop the server with Ctrl+C on any OS: workers are stopped together with their whole process tree (claude → node → chromium).
+Then open http://127.0.0.1:8766. Under **New session**, enter a URL, pick a mode and a duration, and click **Start**.
+
+**Page load wait** (default 120 seconds, 5–600) is how long a page may take to load before it counts as broken. It sets the workers' browser navigation timeout, and the navigation and `expect()` waits in the reproduction tests. Workers are also told to wait that long and reload once before reporting a blank, 404 or "not found" page. Raise it for slow staging hosts; from the CLI use `--page-load 180`. Stop the server with Ctrl+C on any OS: workers are stopped together with their whole process tree (claude → node → chromium).
 
 You can also queue a session from the command line:
 

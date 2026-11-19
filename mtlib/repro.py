@@ -25,7 +25,8 @@ CONFIG_TS = """import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   testMatch: 'repro.spec.ts',
-  timeout: 60000,
+  timeout: __TEST_TIMEOUT__,
+  expect: { timeout: __EXPECT_TIMEOUT__ },
   retries: 0,
   workers: 1,
   outputDir: 'test-results',
@@ -38,7 +39,7 @@ export default defineConfig({
     screenshot: 'on',
     trace: 'retain-on-failure',
     actionTimeout: 10000,
-    navigationTimeout: 20000,
+    navigationTimeout: __NAV_TIMEOUT__,
   },
 });
 """
@@ -48,7 +49,17 @@ def _dir(path) -> str:
     return os.path.normpath(os.path.abspath(os.fspath(path)))
 
 
-def write_config(work_dir, browser: str, viewport: str) -> Path:
+DEFAULT_PAGE_LOAD_S = 120
+
+
+def test_timeout_s(page_load_s: int) -> int:
+    """Room for one run: a slow first load, a slow assertion wait, plus the steps themselves."""
+    return 2 * int(page_load_s) + 60
+
+
+def write_config(work_dir, browser: str, viewport: str, page_load_s: int = DEFAULT_PAGE_LOAD_S) -> Path:
+    """playwright.config.ts for one suspect. page_load_s is how long a page may take to load: it is the
+    navigation timeout and the expect() wait, so a slow page is not mistaken for a broken one."""
     base = _dir(work_dir)
     os.makedirs(base, exist_ok=True)
     browser = (browser or "chromium").lower()
@@ -61,6 +72,9 @@ def write_config(work_dir, browser: str, viewport: str) -> Path:
     w, h = (m.group(1), m.group(2)) if m else ("1280", "800")
     text = (CONFIG_TS.replace("__BROWSER__", browser).replace("__CHANNEL__", channel)
             .replace("__W__", w).replace("__H__", h))
+    load_ms = max(5, min(600, int(page_load_s or DEFAULT_PAGE_LOAD_S))) * 1000
+    text = (text.replace("__TEST_TIMEOUT__", str(test_timeout_s(load_ms // 1000) * 1000))
+            .replace("__EXPECT_TIMEOUT__", str(load_ms)).replace("__NAV_TIMEOUT__", str(load_ms)))
     path = os.path.normpath(os.path.join(base, "playwright.config.ts"))
     if os.path.dirname(path) != base:
         raise ValueError("bad config path")

@@ -22,7 +22,7 @@ How to test
 - Print markers as you go, never batched at the end: you may be stopped at any time. For each new page you reach print PAGE: {"url": "...", "title": "...", "kind": "...", "components": [...], "links": [...]}.
 - Optionally print ACTION: {"did": "<short>", "saw": "<short>"} for notable steps.
 
-When you find something that looks wrong, first re-check it once (repeat the steps) and then report it at once:
+When you find something that looks wrong, first re-check it once (repeat the steps; for a blank, 404 or "not found" page, wait up to $page_load_s seconds for it to load and reload once), and then report it at once:
 SUSPECT: {"title": "<short, specific>", "url": "<page where it shows>", "steps": ["Open <url>", "Type \"\" in Name", "Click Save"], "expected": "<what should happen>", "actual": "<what happened>", "severity": "<critical|high|medium|low>", "confidence": <0.0-1.0>, "evidence": ["console: <error line>", "network: POST /api/x -> 500"]}
 - steps must be exact and replayable from a fresh browser starting at a URL (include the literal values typed, and MT_USERNAME / MT_PASSWORD for logins).
 - severity: critical = data loss, security, crash of a main flow; high = main feature broken; medium = wrong behaviour with a workaround; low = cosmetic.

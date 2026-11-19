@@ -936,5 +936,41 @@ class TestDeleteApi(TestServer):
         self.assertEqual(self.store.stats()["sessions"], 0)
 
 
+# ---------------------------------------------------------------- page load wait
+class TestPageLoad(Base):
+    def agent_for(self, sid, kind="test"):
+        from mtlib import agents
+        from mtlib.dispatcher import session_dir
+        tid = self.store.add_task(sid, kind, "charter")
+        sdir = session_dir(self.cfg, sid)
+        ctx = agents.Context(cfg=self.cfg, store=self.store, srow=self.store.get_session(sid),
+                             task=self.store.get_task(tid), task_dir=sdir / f"t{tid}", session_dir=sdir)
+        return agents.make(ctx)
+
+    def test_default_and_limits(self):
+        self.assertEqual(self.store.get_session(self.new_session())["page_load_s"], 120)
+        self.assertEqual(self.store.get_session(self.new_session(page_load_s=30))["page_load_s"], 30)
+        for bad in (4, 601, "slow"):
+            with self.assertRaises(sessions.FormError):
+                self.new_session(page_load_s=bad)
+
+    def test_browser_waits_that_long(self):
+        agent = self.agent_for(self.new_session(page_load_s=30))
+        agent.write_files()
+        args = json.loads((agent.cwd / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]["playwright"]["args"]
+        self.assertEqual(args[args.index("--timeout-navigation") + 1], "30000")
+        system = (agent.cwd / "append.txt").read_text(encoding="utf-8")
+        self.assertIn("up to 30 seconds to load", system)
+        self.assertNotIn("$page_load_s", system + agent.prompt())
+
+    def test_reproduction_config_and_budget(self):
+        d = self.tmp / "runs" / "s1" / "suspect-1"
+        text = repro.write_config(d, "chromium", "1280x800", 30).read_text(encoding="utf-8")
+        self.assertIn("navigationTimeout: 30000", text)
+        self.assertIn("expect: { timeout: 30000 }", text)
+        self.assertIn(f"timeout: {repro.test_timeout_s(30) * 1000},", text)
+        self.assertIn("navigationTimeout: 120000", repro.write_config(d, "chromium", "1280x800").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,8 @@ Rules
 - When you call click/type/fill tools, set `element` to the element's visible text or label (e.g. "Delete all button"). A safety guard reads it.
 - $destructive
 - $auth
+- Pages in this app can take up to $page_load_s seconds to load. A page that is blank, shows a spinner, "loading", "not found" or a 404 right after you open it may still be loading, not broken. Before you treat it as an error: wait (browser_wait_for, a few seconds at a time, up to $page_load_s seconds in total) until the content appears, then take a fresh snapshot. If it still fails, reload once and check again. A failure counts only if it is still there after that.
+- An HTTP status alone is not the bug: check what the user sees. If the document request answers 404 but the page then renders correctly (common for single-page apps opened on a deep link), it is at most a low-severity finding, and you must say so in "actual".
 - After each meaningful step, check browser_console_messages for errors and, when a request may have failed, browser_network_requests for 4xx/5xx responses.
 - Take a screenshot (browser_take_screenshot) when you land on a new page and when you see something wrong, so the dashboard can show it.
 - Report through marker lines. A marker line is on its own line in your text reply, starts with the marker name and a colon, and carries ONE LINE of compact JSON. Never wrap markers in code fences. The orchestrator reads them live.

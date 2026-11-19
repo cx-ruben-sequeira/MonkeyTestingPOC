@@ -52,7 +52,8 @@ class Reproducer(Agent):
     def prompt(self) -> str:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         repro.write_config(self.work_dir, self.srow["browser"] or self.cfg.browser,
-                           self.srow["viewport"] or self.cfg.viewport)
+                           self.srow["viewport"] or self.cfg.viewport,
+                           self.srow.get("page_load_s") or repro.DEFAULT_PAGE_LOAD_S)
         s = self.suspect
         steps = "\n".join(f"{i}. {st}" for i, st in enumerate(s["steps"] or [], 1)) or "(not given)"
         self.store.update_suspect(s["id"], status="reproducing", runs_total=int(self.srow["repeat_count"]),
@@ -82,7 +83,9 @@ class Reproducer(Agent):
             self.store.update_task(self.tid, current_action=f"reproduction run {done}/{total}: {failed} failed")
 
         run = self.ctx.repro_fn or repro.run_repeats
-        out = await run(self.cfg, self.work_dir, n, env_extra=read_secrets(self.ctx.session_dir),
+        load = int(self.srow.get("page_load_s") or repro.DEFAULT_PAGE_LOAD_S)
+        budget = max(self.cfg.repro_timeout_s, n * repro.test_timeout_s(load) + 60)   # N slow runs must fit
+        out = await run(self.cfg, self.work_dir, n, env_extra=read_secrets(self.ctx.session_dir), timeout_s=budget,
                         on_progress=progress)
         verdict = out.get("verdict")
         status = {"confirmed": "confirmed", "not_confirmed": "not_confirmed"}.get(verdict, "error")

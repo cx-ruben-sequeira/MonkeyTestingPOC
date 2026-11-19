@@ -57,6 +57,7 @@ def create(cfg: Config, store: Store, form: dict) -> dict:
     duration = _int(form, "duration_min", 20, 1, 480)
     max_actions = _int(form, "max_actions", 300, 10, 10000)
     repeats = _int(form, "repeat_count", 5, 1, 20)
+    page_load = _int(form, "page_load_s", 120, 5, 600)   # how long a page may take to load (seconds)
     browser = str(form.get("browser") or cfg.browser).lower()
     if browser not in BROWSERS:
         raise FormError(f"browser must be one of {', '.join(BROWSERS)}")
@@ -90,7 +91,7 @@ def create(cfg: Config, store: Store, form: dict) -> dict:
         viewport=viewport, instructions=str(form.get("instructions") or "")[:4000], allowed_origins=extra,
         allow_destructive=1 if form.get("allow_destructive") else 0, login_url=login_url or None,
         has_auth=1 if (user or password) else 0,
-        shots_every_action=1 if form.get("shots_every_action") else 0, status="queued")
+        shots_every_action=1 if form.get("shots_every_action") else 0, page_load_s=page_load, status="queued")
     write_session_files(cfg, sid, [origin(url)] + extra, bool(form.get("allow_destructive")), user, password)
     store.add_event(sid, None, "dashboard", "info", f"session queued: {url}, {mode}, {duration} min, N={repeats}")
     if form.get("repeat_of") not in (None, ""):

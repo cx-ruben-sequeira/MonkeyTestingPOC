@@ -123,6 +123,11 @@ class Agent:
         return self.ctx.task_dir
 
     @property
+    def page_load_s(self) -> int:
+        """How long a page may take to load in this session (New session form, default 120 s)."""
+        return max(5, min(600, int(self.srow.get("page_load_s") or 120)))
+
+    @property
     def browser_dir(self) -> Path:
         return self.ctx.task_dir / "browser"
 
@@ -175,6 +180,7 @@ class Agent:
                             "Destructive actions (delete, remove, pay, purchase, transfer, send, invite, "
                             "unsubscribe, reset...) are BLOCKED by a guard; if one is blocked, note it and move on."),
             "budget": self.task["action_budget"] or row["max_actions"],
+            "page_load_s": self.page_load_s,
             "session_id": self.sid, "task_id": self.tid,
         }
 
@@ -286,7 +292,8 @@ class Agent:
         args = [fwd(self.cfg.mcp_cli), "--isolated", "--output-dir", fwd(self.browser_dir),
                 "--allowed-origins", ";".join(self.allowed_origins()),
                 "--viewport-size", viewport.replace("x", ","),
-                "--timeout-action", str(self.cfg.action_timeout_ms), "--console-level", "warning",
+                "--timeout-action", str(self.cfg.action_timeout_ms),
+                "--timeout-navigation", str(self.page_load_s * 1000), "--console-level", "warning",
                 "--image-responses", "omit"]
         if self.cfg.headless:
             args.append("--headless")

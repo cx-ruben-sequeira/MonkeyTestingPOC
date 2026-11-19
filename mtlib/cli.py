@@ -72,7 +72,7 @@ def cmd_start(cfg, args) -> int:
             "url": args.url, "mode": args.mode, "duration_min": args.minutes, "repeat_count": args.repeats,
             "max_actions": args.max_actions, "instructions": args.instructions or "",
             "allow_destructive": args.allow_destructive, "confirm_non_test": args.yes,
-            "shots_every_action": args.screenshots})
+            "shots_every_action": args.screenshots, "page_load_s": args.page_load})
     except sessions.FormError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -208,6 +208,8 @@ def main(argv=None) -> int:
     st.add_argument("--max-actions", type=int, default=300)
     st.add_argument("--instructions")
     st.add_argument("--allow-destructive", action="store_true")
+    st.add_argument("--page-load", type=int, default=120, metavar="SECONDS",
+                    help="how long a page may take to load before it counts as broken (5-600, default 120)")
     st.add_argument("--screenshots", action="store_true", help="save a screenshot after every browser action")
     st.add_argument("--yes", action="store_true", help="start even if the host doesn't look like a test host")
     sub.add_parser("status", help="sessions and workers")

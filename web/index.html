@@ -200,6 +200,7 @@ table.t td.sel, table.t th.sel { width: 26px; padding-right: 0; }
         <label class="f">Duration (minutes)<input name="duration_min" type="number" min="1" max="480" value="20"></label>
         <label class="f">Max actions<input name="max_actions" type="number" min="10" max="10000" value="300"><span class="hint">browser actions across all workers</span></label>
         <label class="f">Repeats per suspect (N)<input name="repeat_count" type="number" min="1" max="20" value="5"><span class="hint">a Bug must fail all N runs</span></label>
+        <label class="f">Page load wait (seconds)<input name="page_load_s" type="number" min="5" max="600" value="120"><span class="hint">how long a page may take to load before it counts as broken (default 120 = 2 min)</span></label>
         <details class="full"><summary>Browser, login and instructions</summary>
           <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 16px;margin-top:8px">
             <label class="f">Browser<select name="browser"><option>chromium</option><option>firefox</option><option>webkit</option><option>chrome</option><option>msedge</option></select></label>
@@ -424,7 +425,7 @@ async function repeatSession(id) {
   if (!s) { showErr(`Session #${id} not found`); return; }
   const f = $('#newForm'), set = (n, v) => { f.elements[n].value = v ?? ''; };
   f.reset();
-  set('url', s.url); set('duration_min', s.duration_min); set('max_actions', s.max_actions); set('repeat_count', s.repeat_count);
+  set('url', s.url); set('duration_min', s.duration_min); set('max_actions', s.max_actions); set('repeat_count', s.repeat_count); set('page_load_s', s.page_load_s || 120);
   set('browser', s.browser || 'chromium'); set('viewport', s.viewport || '1280x800');
   set('name', s.name && s.name !== new URL(s.url).host ? s.name : ''); set('login_url', s.login_url);
   const loginOrigin = s.login_url ? new URL(s.login_url).origin.toLowerCase() : '';
@@ -546,7 +547,7 @@ function renderLive() {
   $('#lvTimeBar span').style.width = (100 * used / total) + '%';
   $('#lvAct').textContent = `${s.actions_used} of ${s.max_actions}`;
   $('#lvActBar span').style.width = Math.min(100, 100 * s.actions_used / s.max_actions) + '%';
-  $('#lvMeta').innerHTML = `<span>${esc(s.url)}</span><span>${esc(s.mode)} mode</span><span>N = ${s.repeat_count}</span><span>$${(s.cost_usd || 0).toFixed(2)}</span>${s.allow_destructive ? '<span class="pill warn">destructive allowed</span>' : '<span>guard on</span>'}`;
+  $('#lvMeta').innerHTML = `<span>${esc(s.url)}</span><span>${esc(s.mode)} mode</span><span>N = ${s.repeat_count}</span><span>page load ≤ ${s.page_load_s || 120}s</span><span>$${(s.cost_usd || 0).toFixed(2)}</span>${s.allow_destructive ? '<span class="pill warn">destructive allowed</span>' : '<span>guard on</span>'}`;
   $('#lvMetrics').innerHTML = [['Pages', `${c.pages_visited || 0}<small>/${c.pages_total || 0}</small>`], ['Suspects', d.suspects.length],
     ['Bugs', c.confirmed || 0], ['Not confirmed', c.not_confirmed || 0]].map(([l, v]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
   const ws = st.workers.filter(w => w.session_id === s.id);

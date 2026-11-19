@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     has_auth INTEGER NOT NULL DEFAULT 0,
     shots_every_action INTEGER NOT NULL DEFAULT 0,
     delete_state TEXT,
+    page_load_s INTEGER NOT NULL DEFAULT 120,
     status TEXT NOT NULL,
     phase TEXT,
     seed INTEGER,
@@ -158,7 +159,7 @@ CREATE TABLE IF NOT EXISTS usage (
 SESSION_DEFAULTS = {
     "name": None, "url": None, "origin": None, "mode": None, "duration_min": None, "max_actions": None,
     "repeat_count": None, "browser": None, "viewport": None, "instructions": "", "allowed_origins": "[]",
-    "allow_destructive": 0, "login_url": None, "has_auth": 0, "shots_every_action": 0, "delete_state": None, "status": "queued", "phase": None, "seed": None,
+    "allow_destructive": 0, "login_url": None, "has_auth": 0, "shots_every_action": 0, "delete_state": None, "page_load_s": 120, "status": "queued", "phase": None, "seed": None,
     "rounds": 0, "actions_used": 0, "cost_usd": 0, "cancel_requested": 0, "created_at": None,
     "started_at": None, "deadline": None, "budget_hit_at": None, "finished_at": None, "report_path": None,
     "summary": None, "error": None,
@@ -183,13 +184,13 @@ JSON_COLS = {"allowed_origins", "charter", "components", "steps", "evidence", "r
 INSERT_SESSION = """
 INSERT INTO sessions (
     name, url, origin, mode, duration_min, max_actions, repeat_count, browser, viewport,
-    instructions, allowed_origins, allow_destructive, login_url, has_auth, shots_every_action, delete_state, status,
-    phase, seed, rounds, actions_used, cost_usd, cancel_requested, created_at, started_at, deadline,
+    instructions, allowed_origins, allow_destructive, login_url, has_auth, shots_every_action, delete_state, page_load_s,
+    status, phase, seed, rounds, actions_used, cost_usd, cancel_requested, created_at, started_at, deadline,
     budget_hit_at, finished_at, report_path, summary, error)
 VALUES (
     :name, :url, :origin, :mode, :duration_min, :max_actions, :repeat_count, :browser, :viewport,
     :instructions, :allowed_origins, :allow_destructive, :login_url, :has_auth, :shots_every_action, :delete_state,
-    :status, :phase, :seed, :rounds, :actions_used, :cost_usd, :cancel_requested, :created_at, :started_at,
+    :page_load_s, :status, :phase, :seed, :rounds, :actions_used, :cost_usd, :cancel_requested, :created_at, :started_at,
     :deadline, :budget_hit_at, :finished_at, :report_path, :summary, :error)
 """
 UPDATE_SESSION = """
@@ -210,6 +211,7 @@ UPDATE sessions SET
     has_auth = CASE WHEN :u_has_auth THEN :has_auth ELSE has_auth END,
     shots_every_action = CASE WHEN :u_shots_every_action THEN :shots_every_action ELSE shots_every_action END,
     delete_state = CASE WHEN :u_delete_state THEN :delete_state ELSE delete_state END,
+    page_load_s = CASE WHEN :u_page_load_s THEN :page_load_s ELSE page_load_s END,
     status = CASE WHEN :u_status THEN :status ELSE status END,
     phase = CASE WHEN :u_phase THEN :phase ELSE phase END,
     seed = CASE WHEN :u_seed THEN :seed ELSE seed END,
@@ -309,6 +311,7 @@ SELECT_SESSION = "SELECT * FROM sessions WHERE id = ?"
 SESSION_COLUMNS = "PRAGMA table_info(sessions)"
 ADD_SHOTS_COLUMN = "ALTER TABLE sessions ADD COLUMN shots_every_action INTEGER NOT NULL DEFAULT 0"
 ADD_DELETE_STATE_COLUMN = "ALTER TABLE sessions ADD COLUMN delete_state TEXT"
+ADD_PAGE_LOAD_COLUMN = "ALTER TABLE sessions ADD COLUMN page_load_s INTEGER NOT NULL DEFAULT 120"
 LIST_SESSIONS = "SELECT * FROM sessions ORDER BY id DESC LIMIT ?"
 ADD_ACTIONS = "UPDATE sessions SET actions_used = actions_used + ? WHERE id = ?"
 SELECT_ACTIONS = "SELECT actions_used FROM sessions WHERE id = ?"
@@ -443,6 +446,8 @@ class Store:
             self.conn.execute(ADD_SHOTS_COLUMN)
         if "delete_state" not in cols:
             self.conn.execute(ADD_DELETE_STATE_COLUMN)
+        if "page_load_s" not in cols:
+            self.conn.execute(ADD_PAGE_LOAD_COLUMN)
 
     @property
     def conn(self) -> sqlite3.Connection:

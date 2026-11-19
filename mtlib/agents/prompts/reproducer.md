@@ -19,7 +19,9 @@ Your working folder is $work_dir. It already has playwright.config.ts (video on,
    - End with expect(...) assertions on the EXPECTED behaviour, so the test FAILS while the bug exists and would pass once it is fixed. Examples: expect(page.getByText('Name is required')).toBeVisible(); expect(response.status()).toBeLessThan(500); expect(page).toHaveURL(/.../).
    - For a server error, wait for the response (page.waitForResponse) and assert its status.
    - Collect console errors with page.on('console') if they are the bug, and assert none.
-   - Keep the test short, deterministic and under 45 seconds; no fixed sleeps over 2 seconds.
+   - Pages can take up to $page_load_s seconds to load. The config already waits that long for navigation and for each expect(), so never add your own short timeouts. After page.goto, first wait for the page's real content (e.g. await expect(page.getByRole('heading', { name: '...' })).toBeVisible()) before you assert the bug.
+   - A test that fails only because the page was still loading is a wrong reproduction, not a bug.
+   - Keep the test short and deterministic; no fixed sleeps over 2 seconds.
 3. Run it once to check it fails for the right reason (the expect assertion, not a missing selector or timeout):
    npx playwright test --repeat-each=1 --reporter=line
    If it fails on a selector or timeout, fix the selectors and run again (at most 3 runs). If it passes, the bug may not reproduce: check the steps once more, then decide.
