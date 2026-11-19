@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MonkeyTesting</title>
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"%3E%3Crect width="64" height="64" rx="14" fill="%23185fa5"/%3E%3Ccircle cx="32" cy="34" r="17" fill="%23fff"/%3E%3Ccircle cx="14" cy="30" r="7" fill="%23fff"/%3E%3Ccircle cx="50" cy="30" r="7" fill="%23fff"/%3E%3Ccircle cx="26" cy="31" r="3" fill="%23185fa5"/%3E%3Ccircle cx="38" cy="31" r="3" fill="%23185fa5"/%3E%3Cpath d="M25 41q7 6 14 0" fill="none" stroke="%23185fa5" stroke-width="3" stroke-linecap="round"/%3E%3C/svg%3E'>
+<style>
+:root {
+  --bg: #f6f5f1; --surface: #ffffff; --soft: #efede6; --text: #1f1e1b; --muted: #6b6a64; --faint: #9a988f;
+  --border: rgba(31, 30, 27, .12); --border-strong: rgba(31, 30, 27, .24);
+  --accent: #185fa5; --accent-bg: #e6f1fb; --on-accent: #ffffff;
+  --ok: #3b6d11; --ok-bg: #eaf3de; --warn: #854f0b; --warn-bg: #faeeda; --bad: #a32d2d; --bad-bg: #fcebeb;
+  --crit: #7a1d6b; --crit-bg: #f6e6f3;
+  --radius: 8px; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #191917; --surface: #232321; --soft: #2d2d2a; --text: #ecebe5; --muted: #a8a69e; --faint: #7d7b74;
+    --border: rgba(255, 255, 255, .1); --border-strong: rgba(255, 255, 255, .22);
+    --accent: #85b7eb; --accent-bg: #0c3a66; --on-accent: #0b1b2b;
+    --ok: #a7d36b; --ok-bg: #24400c; --warn: #f5c070; --warn-bg: #55330a; --bad: #f29a9a; --bad-bg: #5c1a1a;
+    --crit: #f0a6e2; --crit-bg: #4d1744;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+h2 { font-size: 15px; font-weight: 600; margin: 0; }
+h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+a { color: var(--accent); }
+button { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 5px 12px; cursor: pointer; }
+button:hover { background: var(--soft); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+button.primary:hover { filter: brightness(1.08); }
+button.danger { color: var(--bad); }
+button.confirm { background: var(--bad); color: #fff; border-color: var(--bad); }
+button.small { padding: 2px 8px; font-size: 12px; }
+button.icon { border: none; background: transparent; font-size: 20px; line-height: 1; padding: 2px 6px; color: var(--muted); }
+input, textarea, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 7px 10px; width: 100%; }
+input[type=checkbox], input[type=radio] { width: auto; }
+input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.pill { display: inline-block; font-size: 12px; padding: 1px 9px; border-radius: 999px; white-space: nowrap; background: var(--soft); color: var(--muted); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.accent { background: var(--accent-bg); color: var(--accent); }
+.pill.critical { background: var(--crit-bg); color: var(--crit); }
+.pill.high { background: var(--bad-bg); color: var(--bad); }
+.pill.medium { background: var(--warn-bg); color: var(--warn); }
+.pill.low { background: var(--soft); color: var(--muted); }
+.top { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.brand { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.brand b { font-size: 16px; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.stepper { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.stepper button { padding: 1px 9px; }
+.tabs { display: flex; gap: 2px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border); overflow-x: auto; position: sticky; top: 53px; z-index: 4; }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 10px 14px; color: var(--muted); white-space: nowrap; }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .count { font-size: 11px; margin-left: 4px; }
+main { max-width: 1240px; margin: 0 auto; padding: 16px 20px 60px; }
+.banner { border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; background: var(--warn-bg); color: var(--warn); }
+.banner.bad { background: var(--bad-bg); color: var(--bad); }
+.banner.ok { background: var(--ok-bg); color: var(--ok); }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.metric { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; }
+.metric .l { font-size: 13px; color: var(--muted); }
+.metric .v { font-size: 24px; font-weight: 600; }
+.metric .v small { font-size: 13px; font-weight: 400; color: var(--muted); }
+.section-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 8px; gap: 8px; flex-wrap: wrap; }
+.workers { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; margin-bottom: 12px; }
+.wh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; }
+.wtitle { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shot { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; border-radius: 6px; border: 1px solid var(--border); background: var(--soft); display: block; margin: 8px 0; }
+.shot.none { display: flex; align-items: center; justify-content: center; color: var(--faint); font-size: 12px; }
+.steprow { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 8px 0 4px; gap: 8px; }
+.bar { height: 6px; background: var(--soft); border-radius: 3px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.bar.warn > span { background: var(--warn); }
+.action { margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 13px; }
+.wmeta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
+.item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.item.click { cursor: pointer; }
+.item.click:hover .t { text-decoration: underline; }
+.item .main { min-width: 0; }
+.item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .side { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.empty { color: var(--muted); font-size: 13px; padding: 10px 0; border-top: 1px solid var(--border); }
+.log { max-height: 380px; overflow-y: auto; line-height: 1.7; font-size: 12px; }
+.log .row { display: flex; gap: 8px; border-top: 1px solid var(--border); padding: 2px 0; }
+.log .ts { color: var(--faint); font-family: var(--mono); flex-shrink: 0; }
+.log .src { color: var(--muted); flex-shrink: 0; min-width: 72px; }
+.log .k-blocked, .log .k-error { color: var(--bad); }
+.log .k-bug, .log .k-suspect { color: var(--warn); font-weight: 600; }
+.log .k-result { color: var(--ok); }
+form.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 16px; }
+form.grid .full { grid-column: 1 / -1; }
+label.f { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+label.f span.hint { font-size: 12px; color: var(--faint); }
+.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius); overflow: hidden; }
+.seg button { border: none; border-radius: 0; padding: 6px 14px; }
+.seg button.on { background: var(--accent); color: var(--on-accent); }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+details > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; }
+table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.t th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
+table.t td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.t tr.click { cursor: pointer; }
+table.t tr.click:hover td { background: var(--soft); }
+.ell { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 20; display: none; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 100%); background: var(--surface); z-index: 21; overflow-y: auto; padding: 18px 22px 40px; box-shadow: -8px 0 30px rgba(0,0,0,.2); display: none; }
+.drawer.open, .drawer-back.open { display: block; }
+.drawer video { width: 100%; border-radius: 8px; background: #000; margin: 8px 0; }
+.drawer h4 { margin: 16px 0 4px; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.drawer ol { margin: 4px 0; padding-left: 22px; }
+.thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+.thumbs img { width: 160px; border-radius: 6px; border: 1px solid var(--border); cursor: zoom-in; }
+.runs { display: flex; gap: 4px; flex-wrap: wrap; }
+.run { width: 22px; height: 22px; border-radius: 4px; font-size: 11px; display: flex; align-items: center; justify-content: center; }
+.run.f { background: var(--bad-bg); color: var(--bad); }
+.run.p { background: var(--ok-bg); color: var(--ok); }
+.run.q { background: var(--soft); color: var(--faint); }
+.pre { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; background: var(--soft); padding: 8px 10px; border-radius: 6px; }
+.mapwrap { overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.mapwrap svg text { font: 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: var(--text); }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); align-items: center; flex-wrap: wrap; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.md h1 { font-size: 20px; } .md h2 { font-size: 16px; margin-top: 22px; } .md h3 { font-size: 14px; margin-top: 16px; }
+.md table { border-collapse: collapse; } .md td, .md th { border: 1px solid var(--border); padding: 4px 10px; }
+.md code { font-family: var(--mono); font-size: 12px; background: var(--soft); padding: 1px 4px; border-radius: 4px; }
+.sevbars .r { display: grid; grid-template-columns: 70px 1fr 30px; gap: 8px; align-items: center; font-size: 13px; margin: 4px 0; }
+.hide { display: none !important; }
+@media (max-width: 640px) { .top, main { padding-left: 12px; padding-right: 12px; } .tabs { padding: 0 6px; } .two { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><b>🐒 MonkeyTesting</b><span class="muted small">autonomous exploratory QA</span></div>
+  <div class="actions">
+    <span id="jiraPill" class="pill">Jira</span>
+    <span class="stepper" title="Parallel Claude workers across all sessions">Workers
+      <button id="wDown" aria-label="fewer workers">−</button><b id="wNum">–</b><button id="wUp" aria-label="more workers">+</button></span>
+    <span id="busy" class="pill"></span>
+  </div>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-tab="dash" class="on">Dashboard</button>
+  <button data-tab="new">New session</button>
+  <button data-tab="live">Live monitor</button>
+  <button data-tab="map">Map</button>
+  <button data-tab="bugs">Bugs <span class="count pill" id="bugCount">0</span></button>
+  <button data-tab="report">Report</button>
+</nav>
+<main>
+  <div id="err" class="banner bad hide"></div>
+
+  <!-- Dashboard -->
+  <section id="tab-dash">
+    <div class="metrics" id="dashMetrics"></div>
+    <div class="two">
+      <div class="card"><div class="section-head"><h2>Bugs by severity</h2></div><div class="sevbars" id="dashSev"></div></div>
+      <div class="card"><div class="section-head"><h2>Workers now</h2><span class="muted small" id="dashQueue"></span></div><div id="dashWorkers"></div></div>
+    </div>
+    <div class="card"><div class="section-head"><h2>Recent sessions</h2><button class="primary small" data-go="new">New session</button></div>
+      <div id="dashSessions"></div></div>
+  </section>
+
+  <!-- New session -->
+  <section id="tab-new" class="hide">
+    <div class="card">
+      <div class="section-head"><h2>New test session</h2><span class="muted small">Minimal path: URL → mode → duration → Start</span></div>
+      <form id="newForm" class="grid" autocomplete="off">
+        <label class="f full">Application URL (QA / staging)
+          <input name="url" type="url" required placeholder="https://staging.myapp.com" id="fUrl"></label>
+        <div id="hostWarn" class="banner full hide"></div>
+        <div class="full"><div class="muted small" style="margin-bottom:4px">Exploration mode</div>
+          <div class="seg" id="modeSeg"><button type="button" data-mode="random">Random</button><button type="button" data-mode="ai">AI-guided</button><button type="button" data-mode="hybrid" class="on">Hybrid</button></div>
+          <div class="muted small" id="modeHint" style="margin-top:4px"></div></div>
+        <label class="f">Duration (minutes)<input name="duration_min" type="number" min="1" max="480" value="20"></label>
+        <label class="f">Max actions<input name="max_actions" type="number" min="10" max="10000" value="300"><span class="hint">browser actions across all workers</span></label>
+        <label class="f">Repeats per suspect (N)<input name="repeat_count" type="number" min="1" max="20" value="5"><span class="hint">a Bug must fail all N runs</span></label>
+        <details class="full"><summary>Browser, login and instructions</summary>
+          <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 16px;margin-top:8px">
+            <label class="f">Browser<select name="browser"><option>chromium</option><option>firefox</option><option>webkit</option><option>chrome</option><option>msedge</option></select></label>
+            <label class="f">Viewport<input name="viewport" value="1280x800" pattern="\d{3,4}x\d{3,4}"></label>
+            <label class="f">Session name<input name="name" placeholder="optional"></label>
+            <label class="f">Login URL<input name="login_url" type="url" placeholder="optional"></label>
+            <label class="f">User / email<input name="username" autocomplete="off"></label>
+            <label class="f">Password<input name="password" type="password" autocomplete="new-password"><span class="hint">kept in a local 0600 file, masked in logs, never sent to Claude</span></label>
+            <label class="f" style="grid-column:1/-1">Extra allowed origins<input name="extra_origins" placeholder="https://auth.staging.myapp.com (space separated)"></label>
+            <label class="f" style="grid-column:1/-1">Instructions and constraints<textarea name="instructions" rows="3" placeholder="e.g. Focus on checkout. Don't touch /admin. Use test card 4242…"></textarea></label>
+          </div></details>
+        <label class="check full"><input type="checkbox" name="allow_destructive"> <span>Allow destructive actions (delete, pay, send, transfer…). Off by default: a guard blocks them.</span></label>
+        <label class="check full hide" id="confirmRow"><input type="checkbox" name="confirm_non_test"> <span><b>This is a test environment.</b> I understand the agents will click, type and submit forms here.</span></label>
+        <div class="full actions"><button class="primary" type="submit" id="startBtn">Start session</button><span class="muted small" id="newMsg"></span></div>
+      </form>
+    </div>
+  </section>
+
+  <!-- Live monitor -->
+  <section id="tab-live" class="hide">
+    <div class="section-head"><div class="actions"><h2>Session</h2><select id="liveSel" style="width:auto;min-width:280px"></select></div>
+      <div class="actions"><span id="liveStatus"></span><button class="danger small" id="cancelBtn">Cancel session</button></div></div>
+    <div id="liveEmpty" class="empty hide">No sessions yet. Start one from New session.</div>
+    <div id="liveBody">
+      <div class="two">
+        <div class="card"><div class="steprow"><span>Time</span><span id="lvTime"></span></div><div class="bar" id="lvTimeBar"><span></span></div>
+          <div class="steprow"><span>Actions</span><span id="lvAct"></span></div><div class="bar" id="lvActBar"><span></span></div>
+          <div class="wmeta" id="lvMeta"></div></div>
+        <div class="card"><div class="metrics" id="lvMetrics" style="margin:0"></div></div>
+      </div>
+      <div class="section-head"><h2>Workers</h2><span class="muted small" id="lvQueue"></span></div>
+      <div class="workers" id="lvWorkers"></div>
+      <div class="two">
+        <div class="card"><div class="section-head"><h2>Suspected bugs</h2><span class="muted small">a Bug must fail all N runs</span></div><div id="lvSuspects"></div></div>
+        <div class="card"><div class="section-head"><h2>Event log</h2><label class="small muted"><input type="checkbox" id="logActions" checked> actions</label></div><div class="log" id="lvLog"></div></div>
+      </div>
+      <div class="card"><details><summary>Tasks</summary><div id="lvTasks"></div></details></div>
+    </div>
+  </section>
+
+  <!-- Map -->
+  <section id="tab-map" class="hide">
+    <div class="section-head"><div class="actions"><h2>Application map</h2><select id="mapSel" style="width:auto;min-width:280px"></select></div>
+      <div class="legend"><span><i class="dot" style="background:var(--accent)"></i>explored</span><span><i class="dot" style="background:var(--faint)"></i>discovered, not visited</span><span><i class="dot" style="background:var(--bad)"></i>has a bug</span><span id="mapCount"></span></div></div>
+    <div class="mapwrap" id="mapWrap"></div>
+    <div class="card" style="margin-top:12px"><details><summary>Pages list</summary><div id="mapList"></div></details></div>
+  </section>
+
+  <!-- Bugs -->
+  <section id="tab-bugs" class="hide">
+    <div class="section-head"><h2>Confirmed bugs</h2>
+      <div class="actions"><select id="bugSev" style="width:auto"><option value="">All severities</option><option>critical</option><option>high</option><option>medium</option><option>low</option></select>
+        <select id="bugSess" style="width:auto"><option value="">All sessions</option></select></div></div>
+    <div class="card" id="bugList"></div>
+    <div class="card"><details id="ncWrap"><summary id="ncSum">Not confirmed</summary><div id="ncList"></div></details></div>
+  </section>
+
+  <!-- Report -->
+  <section id="tab-report" class="hide">
+    <div class="section-head"><div class="actions"><h2>Report</h2><select id="repSel" style="width:auto;min-width:280px"></select></div>
+      <a id="repDl" class="small" href="#">Download Markdown</a></div>
+    <div class="two">
+      <div class="card"><h3>Coverage</h3><div id="repCov"></div></div>
+      <div class="card"><h3>Severity distribution</h3><div class="sevbars" id="repSev"></div></div>
+    </div>
+    <div class="card md" id="repBody"></div>
+  </section>
+</main>
+
+<div class="drawer-back" id="drawerBack"></div>
+<aside class="drawer" id="drawer" aria-label="Bug detail"></aside>
+
+<script>
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const SEV = ['critical', 'high', 'medium', 'low'];
+const MODE_HINT = {random: 'Monkey mode: random actions from the current page, seeded. Wide but shallow.',
+  ai: 'AI-guided: actions chosen by value — main flows, validation, state changes.',
+  hybrid: 'Hybrid: alternates one AI-guided action with one random action. Good default.'};
+const TEST_HOST = /(^|[.\-])(staging|stage|stg|qa|test|testing|dev|develop|sandbox|uat|preview|demo|local)([.\-\d]|$)|^localhost$|\.localhost$|\.test$|\.local$|^127\.0\.0\.1$|^\[::1\]$/i;
+
+let S = {state: null, bugs: [], tab: 'dash', sel: null, mode: 'hybrid', report: {}, jiraArm: null};
+try { S.tab = localStorage.getItem('mt.tab') || 'dash'; S.sel = +localStorage.getItem('mt.sel') || null; } catch (e) {}
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-MT': '1'}, body: JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+function showErr(msg) { const e = $('#err'); e.textContent = msg; e.classList.toggle('hide', !msg); }
+const ago = ts => { if (!ts) return ''; const s = Date.now() / 1000 - ts; return s < 60 ? Math.round(s) + 's ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : new Date(ts * 1000).toLocaleDateString(); };
+const clock = ts => new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+const mins = s => s < 60 ? Math.max(0, Math.round(s)) + 's' : Math.round(s / 60) + ' min';
+const statusPill = s => { const c = {running: 'accent', reporting: 'accent', queued: '', done: 'ok', cancelled: 'warn', failed: 'bad'}[s] || ''; return `<span class="pill ${c}">${esc(s)}</span>`; };
+const sevPill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
+const kindLabel = {explore: 'Explorer', test: 'Tester', repro: 'Reproducer', report: 'Reporter'};
+
+// ---------------------------------------------------------------- tabs
+function setTab(t) {
+  S.tab = t; try { localStorage.setItem('mt.tab', t); } catch (e) {}
+  $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  $$('main > section').forEach(s => s.classList.toggle('hide', s.id !== 'tab-' + t));
+  render();
+  if (t === 'bugs') loadBugs();
+  if (t === 'report') loadReport(true);
+}
+$('#tabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (b) setTab(b.dataset.tab); });
+document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (g) setTab(g.dataset.go); });
+
+function selectSession(id) {
+  S.sel = id ? +id : null; try { localStorage.setItem('mt.sel', S.sel || ''); } catch (e) {}
+  S.report = {}; poll();
+}
+['#liveSel', '#mapSel', '#repSel'].forEach(s => $(s).addEventListener('change', e => { selectSession(e.target.value); if (S.tab === 'report') loadReport(true); }));
+
+// ---------------------------------------------------------------- header
+$('#wUp').onclick = () => setWorkers(1);
+$('#wDown').onclick = () => setWorkers(-1);
+async function setWorkers(d) {
+  const n = Math.max(1, Math.min(10, (S.state?.max_workers || 3) + d));
+  try { await api('/api/settings', {max_workers: n}); poll(); } catch (e) { showErr(e.message); }
+}
+
+// ---------------------------------------------------------------- polling
+async function poll() {
+  try {
+    S.state = await api('/api/state' + (S.sel ? '?session=' + S.sel : ''));
+    showErr('');
+    if (!S.sel && S.state.sessions.length) { S.sel = S.state.sessions[0].id; return poll(); }
+    render();
+  } catch (e) { showErr('Dashboard server not reachable: ' + e.message); }
+}
+async function loadBugs() { try { S.bugs = await api('/api/bugs'); renderBugs(); } catch (e) { showErr(e.message); } }
+setInterval(poll, 2000);
+setInterval(() => { if (S.tab === 'bugs' || S.tab === 'dash') loadBugs(); if (S.tab === 'report') loadReport(false); }, 5000);
+
+function render() {
+  const st = S.state; if (!st) return;
+  $('#wNum').textContent = st.max_workers;
+  $('#busy').textContent = `${st.workers.length} running · ${st.queued} queued`;
+  const jp = $('#jiraPill'); jp.textContent = st.jira_ready ? 'Jira ready' : 'Jira not set up'; jp.className = 'pill ' + (st.jira_ready ? 'ok' : '');
+  jp.title = st.jira_ready ? '' : 'Set [jira] in config.toml and JIRA_API_TOKEN in the environment';
+  $('#bugCount').textContent = st.stats.bugs;
+  const opts = st.sessions.map(s => `<option value="${s.id}" ${s.id === S.sel ? 'selected' : ''}>#${s.id} ${esc(s.name || s.url)} — ${esc(s.status)}</option>`).join('');
+  ['#liveSel', '#mapSel', '#repSel'].forEach(sel => { if ($(sel).innerHTML !== opts) $(sel).innerHTML = opts; });
+  const bs = '<option value="">All sessions</option>' + st.sessions.map(s => `<option value="${s.id}">#${s.id} ${esc(s.name || s.url)}</option>`).join('');
+  if ($('#bugSess').dataset.h !== bs) { const v = $('#bugSess').value; $('#bugSess').innerHTML = bs; $('#bugSess').value = v; $('#bugSess').dataset.h = bs; }
+  if (S.tab === 'dash') renderDash();
+  if (S.tab === 'live') renderLive();
+  if (S.tab === 'map') renderMap();
+  if (S.tab === 'bugs') renderNotConfirmed();
+  if (S.tab === 'report') renderReportSide();
+}
+
+// ---------------------------------------------------------------- Dashboard
+function sevBars(counts) {
+  const max = Math.max(1, ...SEV.map(k => counts[k] || 0));
+  return SEV.map(k => `<div class="r"><span>${sevPill(k)}</span><div class="bar"><span style="width:${100 * (counts[k] || 0) / max}%;background:var(--${k === 'critical' ? 'crit' : k === 'high' ? 'bad' : k === 'medium' ? 'warn' : 'faint'})"></span></div><b>${counts[k] || 0}</b></div>`).join('');
+}
+function renderDash() {
+  const st = S.state, x = st.stats;
+  const running = st.sessions.filter(s => ['running', 'reporting', 'queued'].includes(s.status)).length;
+  $('#dashMetrics').innerHTML = [
+    ['Sessions', x.sessions, running ? `${running} active` : ''], ['Apps tested', x.apps, ''],
+    ['Confirmed bugs', x.bugs, ''], ['Critical + high', (x.by_severity.critical || 0) + (x.by_severity.high || 0), ''],
+    ['Spend', '$' + (st.usage.cost_usd || 0).toFixed(2), `${Math.round((st.usage.output_tokens || 0) / 1000)}k out tokens`]
+  ].map(([l, v, s]) => `<div class="metric"><div class="l">${l}</div><div class="v">${esc(v)} <small>${esc(s)}</small></div></div>`).join('');
+  $('#dashSev').innerHTML = sevBars(x.by_severity);
+  $('#dashQueue').textContent = `${st.workers.length} / ${st.max_workers} slots · ${st.queued} queued`;
+  $('#dashWorkers').innerHTML = st.workers.length ? st.workers.map(w => `<div class="item"><div class="main"><div class="t"><b>${kindLabel[w.kind] || w.kind}</b> · s#${w.session_id} ${esc(w.title)}</div><div class="small muted t">${esc(w.current_action || w.step_name || '')}</div></div><div class="side small muted">${w.actions} actions</div></div>`).join('') : '<div class="empty">All workers idle.</div>';
+  $('#dashSessions').innerHTML = st.sessions.length ? `<table class="t"><tr><th>#</th><th>App</th><th>Mode</th><th>Status</th><th>Bugs</th><th>Suspects</th><th>Pages</th><th>Actions</th><th>Started</th></tr>` +
+    st.sessions.slice(0, 15).map(s => `<tr class="click" data-sid="${s.id}"><td>${s.id}</td><td class="ell">${esc(s.name || s.url)}<div class="small muted ell">${esc(s.url)}</div></td><td>${esc(s.mode)}</td><td>${statusPill(s.status)}</td><td><b>${s.bugs}</b></td><td>${s.suspects}</td><td>${s.pages_visited}/${s.pages_total}</td><td>${s.actions_used}/${s.max_actions}</td><td class="muted">${ago(s.started_at || s.created_at)}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">No sessions yet. Start one: give a QA/staging URL, pick a mode and a duration.</div>';
+}
+$('#dashSessions').addEventListener('click', e => { const r = e.target.closest('tr[data-sid]'); if (r) { selectSession(r.dataset.sid); setTab('live'); } });
+
+// ---------------------------------------------------------------- New session
+$('#modeSeg').addEventListener('click', e => { const b = e.target.closest('button[data-mode]'); if (!b) return; S.mode = b.dataset.mode; $$('#modeSeg button').forEach(x => x.classList.toggle('on', x === b)); $('#modeHint').textContent = MODE_HINT[S.mode]; });
+$('#modeHint').textContent = MODE_HINT.hybrid;
+$('#fUrl').addEventListener('input', checkHost);
+function checkHost() {
+  let host = ''; try { host = new URL($('#fUrl').value).hostname; } catch (e) {}
+  const bad = host && !TEST_HOST.test(host);
+  $('#hostWarn').classList.toggle('hide', !bad); $('#confirmRow').classList.toggle('hide', !bad);
+  if (bad) $('#hostWarn').innerHTML = `<b>${esc(host)}</b> doesn't look like a QA or staging host (no staging, qa, test, dev, sandbox or localhost label). MonkeyTesting is meant for test environments only: tick the box below to start anyway.`;
+}
+$('#newForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target), body = Object.fromEntries(f.entries());
+  body.mode = S.mode; body.allow_destructive = f.has('allow_destructive'); body.confirm_non_test = f.has('confirm_non_test');
+  $('#startBtn').disabled = true; $('#newMsg').textContent = 'Starting…';
+  try {
+    const out = await api('/api/sessions', body);
+    e.target.querySelector('[name=password]').value = '';
+    $('#newMsg').textContent = '';
+    selectSession(out.id); setTab('live');
+  } catch (err) { $('#newMsg').textContent = err.message; }
+  finally { $('#startBtn').disabled = false; }
+});
+
+// ---------------------------------------------------------------- Live monitor
+function runsBoxes(s) {
+  const n = s.runs_total || 0, runs = s.runs || [];
+  if (!n) return '';
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    const r = runs[i];
+    if (r) out += `<span class="run ${r.status === 'passed' ? 'p' : 'f'}" title="run ${i + 1}: ${esc(r.status)}">${r.status === 'passed' ? '✓' : '✗'}</span>`;
+    else out += `<span class="run q">${i + 1}</span>`;
+  }
+  return `<span class="runs">${out}</span>`;
+}
+function suspectStatus(s) {
+  const n = s.runs_total || 0, f = s.runs_failed || 0;
+  if (s.status === 'confirmed') return `<span class="pill bad">Bug · ${f}/${n} failed</span>`;
+  if (s.status === 'not_confirmed') return `<span class="pill">Not confirmed · ${f}/${n}</span>`;
+  if (s.status === 'reproducing') return `<span class="pill accent">Reproducing · ${f}/${n} failed</span>`;
+  if (s.status === 'error') return `<span class="pill warn">Repro error</span>`;
+  return `<span class="pill">Waiting for a reproducer</span>`;
+}
+function renderLive() {
+  const st = S.state, d = st.selected;
+  $('#liveEmpty').classList.toggle('hide', !!d); $('#liveBody').classList.toggle('hide', !d);
+  if (!d) return;
+  const s = d.session, now = st.now, c = d.counts;
+  $('#liveStatus').innerHTML = statusPill(s.status) + (s.phase && s.phase !== s.status ? ` <span class="muted small">${esc(s.phase)}</span>` : '');
+  $('#cancelBtn').classList.toggle('hide', !['queued', 'running', 'reporting'].includes(s.status));
+  const total = s.duration_min * 60, used = s.started_at ? Math.min(total, (s.finished_at || now) - s.started_at) : 0;
+  $('#lvTime').textContent = s.started_at ? `${mins(used)} of ${s.duration_min} min` : 'not started';
+  $('#lvTimeBar span').style.width = (100 * used / total) + '%';
+  $('#lvAct').textContent = `${s.actions_used} of ${s.max_actions}`;
+  $('#lvActBar span').style.width = Math.min(100, 100 * s.actions_used / s.max_actions) + '%';
+  $('#lvMeta').innerHTML = `<span>${esc(s.url)}</span><span>${esc(s.mode)} mode</span><span>N = ${s.repeat_count}</span><span>$${(s.cost_usd || 0).toFixed(2)}</span>${s.allow_destructive ? '<span class="pill warn">destructive allowed</span>' : '<span>guard on</span>'}`;
+  $('#lvMetrics').innerHTML = [['Pages', `${c.pages_visited || 0}<small>/${c.pages_total || 0}</small>`], ['Suspects', d.suspects.length],
+    ['Bugs', c.confirmed || 0], ['Not confirmed', c.not_confirmed || 0]].map(([l, v]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
+  const ws = st.workers.filter(w => w.session_id === s.id);
+  const queued = d.tasks.filter(t => t.status === 'queued');
+  $('#lvQueue').textContent = `${ws.length} running here · ${queued.length} queued` + (queued.length ? ': ' + queued.slice(0, 4).map(t => kindLabel[t.kind]).join(', ') : '');
+  $('#lvWorkers').innerHTML = ws.length ? ws.map(w => {
+    const pct = w.action_budget ? Math.min(100, 100 * w.actions / w.action_budget) : 0;
+    return `<div class="card" style="margin:0"><div class="wh"><b>${kindLabel[w.kind] || w.kind} <span class="muted small">slot ${w.worker_slot}</span></b><span class="muted small">${mins(now - (w.started_at || now))}</span></div>
+      <div class="wtitle" title="${esc(w.title)}">${esc(w.title)}</div>
+      ${w.screenshot ? `<img class="shot" src="${esc(w.screenshot)}?t=${Math.floor(now / 4)}" alt="latest screenshot">` : '<div class="shot none">no screenshot yet</div>'}
+      ${w.action_budget ? `<div class="steprow"><span>actions</span><span>${w.actions} / ${w.action_budget}</span></div><div class="bar"><span style="width:${pct}%"></span></div>` : ''}
+      <div class="action" title="${esc(w.current_action || '')}">${esc(w.current_action || w.step_name || '')}</div>
+      <div class="wmeta"><span>${w.actions} actions</span><span>${Math.round((w.tokens_out || 0) / 100) / 10}k tokens</span></div></div>`;
+  }).join('') : `<div class="empty">${['running', 'reporting', 'queued'].includes(s.status) ? 'Waiting for a free worker slot…' : 'No worker running for this session.'}</div>`;
+  $('#lvSuspects').innerHTML = d.suspects.length ? d.suspects.map(x => `<div class="item ${x.status === 'confirmed' ? 'click' : ''}" data-bug="${x.status === 'confirmed' ? x.id : ''}"><div class="main"><div class="t">${sevPill(x.severity)} ${esc(x.title)}</div><div class="small muted t">${esc(x.url)}${x.reason ? ' · ' + esc(x.reason) : ''}</div></div><div class="side">${runsBoxes(x)}${suspectStatus(x)}</div></div>`).join('') : '<div class="empty">Nothing suspicious yet.</div>';
+  const showAct = $('#logActions').checked;
+  $('#lvLog').innerHTML = d.events.filter(ev => showAct || ev.kind !== 'action').map(ev => `<div class="row k-${esc(ev.kind)}"><span class="ts">${clock(ev.ts)}</span><span class="src">${esc(ev.source)}</span><span>${ev.kind === 'blocked' ? '⛔ ' : ev.kind === 'bug' ? '🐞 ' : ''}${esc(ev.text)}</span></div>`).join('') || '<div class="empty">No events yet.</div>';
+  $('#lvTasks').innerHTML = `<table class="t"><tr><th>#</th><th>Role</th><th>Task</th><th>Status</th><th>Actions</th><th>Result</th></tr>` + d.tasks.map(t => `<tr><td>${t.id}</td><td>${kindLabel[t.kind]}</td><td class="ell">${esc(t.title)}</td><td>${statusPill(t.status)}${t.stop_reason ? ` <span class="small muted">${esc(t.stop_reason)}</span>` : ''}</td><td>${t.actions}${t.action_budget ? '/' + t.action_budget : ''}</td><td class="ell small">${esc(t.error || t.result || '')}</td></tr>`).join('') + '</table>';
+}
+$('#logActions').addEventListener('change', renderLive);
+$('#lvSuspects').addEventListener('click', e => { const r = e.target.closest('[data-bug]'); if (r && r.dataset.bug) openBug(+r.dataset.bug); });
+$('#cancelBtn').addEventListener('click', async e => {
+  const b = e.target;
+  if (!b.dataset.arm) { b.dataset.arm = 1; b.textContent = 'Click again to cancel'; b.classList.add('confirm'); setTimeout(() => { delete b.dataset.arm; b.textContent = 'Cancel session'; b.classList.remove('confirm'); }, 4000); return; }
+  delete b.dataset.arm; b.textContent = 'Cancel session'; b.classList.remove('confirm');
+  try { await api(`/api/sessions/${S.sel}/cancel`, {}); poll(); } catch (err) { showErr(err.message); }
+});
+
+// ---------------------------------------------------------------- Map (layered layout, no library)
+function renderMap() {
+  const d = S.state.selected;
+  if (!d) { $('#mapWrap').innerHTML = '<div class="empty" style="padding:16px">No session selected.</div>'; return; }
+  const pages = d.pages, edges = d.edges;
+  const key = JSON.stringify([pages.map(p => [p.url, p.visited]), edges.length, d.suspects.length]);
+  if ($('#mapWrap').dataset.k === key) return; $('#mapWrap').dataset.k = key;
+  $('#mapCount').textContent = `${pages.filter(p => p.visited).length} explored · ${pages.filter(p => !p.visited).length} not visited`;
+  if (!pages.length) { $('#mapWrap').innerHTML = '<div class="empty" style="padding:16px">The Explorer hasn\'t mapped any page yet.</div>'; return; }
+  const bugUrls = new Set(d.suspects.filter(s => s.status === 'confirmed').map(s => norm(s.url)));
+  const out = {}; edges.forEach(e => (out[e.src] = out[e.src] || []).push(e.dst));
+  const start = pages.find(p => norm(p.url) === norm(d.session.url)) || pages[0];
+  const depth = {[start.url]: 0}, q = [start.url];
+  while (q.length) { const u = q.shift(); (out[u] || []).forEach(v => { if (depth[v] === undefined) { depth[v] = depth[u] + 1; q.push(v); } }); }
+  let maxD = Math.max(0, ...Object.values(depth));
+  pages.forEach(p => { if (depth[p.url] === undefined) depth[p.url] = maxD + 1; });
+  const cols = {}; pages.forEach(p => (cols[depth[p.url]] = cols[depth[p.url]] || []).push(p));
+  const CW = 230, RH = 46, PAD = 24, pos = {};
+  const nCols = Object.keys(cols).length, maxRows = Math.max(...Object.values(cols).map(c => c.length));
+  Object.entries(cols).forEach(([dpt, list]) => list.forEach((p, i) => { pos[p.url] = {x: PAD + dpt * CW, y: PAD + i * RH}; }));
+  const W = PAD * 2 + nCols * CW, H = PAD * 2 + maxRows * RH;
+  const short = u => { try { const x = new URL(u); return (x.pathname + (x.search || '')) || '/'; } catch (e) { return u; } };
+  let svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Application map">`;
+  svg += `<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="currentColor" opacity=".35"/></marker></defs><g style="color:var(--text)">`;
+  edges.forEach(e => { const a = pos[e.src], b = pos[e.dst]; if (!a || !b) return;
+    const x1 = a.x + 180, y1 = a.y + 15, x2 = b.x, y2 = b.y + 15, mx = (x1 + x2) / 2;
+    svg += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none" stroke="currentColor" stroke-opacity=".22" marker-end="url(#ar)"><title>${esc(e.label || '')}</title></path>`; });
+  svg += '</g>';
+  pages.forEach(p => { const a = pos[p.url], bug = bugUrls.has(norm(p.url));
+    const fill = p.visited ? 'var(--accent-bg)' : 'var(--soft)', stroke = bug ? 'var(--bad)' : p.visited ? 'var(--accent)' : 'var(--faint)';
+    const label = short(p.url), t = label.length > 26 ? label.slice(0, 25) + '…' : label;
+    svg += `<g><rect x="${a.x}" y="${a.y}" width="180" height="30" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="${bug ? 2 : 1}" ${p.visited ? '' : 'stroke-dasharray="4 3"'}/><text x="${a.x + 10}" y="${a.y + 19}">${bug ? '🐞 ' : ''}${esc(t)}</text><title>${esc(p.url)}${p.title ? '\n' + esc(p.title) : ''}${p.kind ? '\n' + esc(p.kind) : ''}${(p.components || []).length ? '\n' + esc(p.components.join('\n')) : ''}</title></g>`; });
+  $('#mapWrap').innerHTML = svg + '</svg>';
+  $('#mapList').innerHTML = `<table class="t"><tr><th>Page</th><th>Title</th><th>Kind</th><th>Status</th><th>Components</th></tr>` + pages.map(p => `<tr><td class="ell mono">${esc(p.url)}</td><td>${esc(p.title || '')}</td><td>${esc(p.kind || '')}</td><td>${p.visited ? '<span class="pill accent">explored</span>' : '<span class="pill">discovered</span>'}</td><td class="small muted">${esc((p.components || []).join(', '))}</td></tr>`).join('') + '</table>';
+}
+function norm(u) { try { const x = new URL(u); return (x.origin + x.pathname.replace(/\/\d+(?=\/|$)/g, '/:id').replace(/\/$/, '')).toLowerCase() || u; } catch (e) { return u; } }
+
+// ---------------------------------------------------------------- Bugs
+['#bugSev', '#bugSess'].forEach(s => $(s).addEventListener('change', renderBugs));
+function renderBugs() {
+  const sev = $('#bugSev').value, ss = $('#bugSess').value;
+  const list = S.bugs.filter(b => (!sev || b.severity === sev) && (!ss || String(b.session_id) === ss))
+    .sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity) || b.id - a.id);
+  $('#bugList').innerHTML = list.length ? `<table class="t"><tr><th>Title</th><th>Severity</th><th>Confidence</th><th>Page</th><th>Session</th><th>Runs</th><th>Jira</th></tr>` +
+    list.map(b => `<tr class="click" data-bug="${b.id}"><td class="ell"><b>${esc(b.title)}</b></td><td>${sevPill(b.severity)}</td><td>${b.confidence == null ? '–' : Math.round(b.confidence * 100) + '%'}</td><td class="ell mono">${esc(b.url)}</td><td class="muted">#${b.session_id}</td><td>${b.runs_failed}/${b.runs_total}</td><td>${b.jira_key ? `<a href="${esc(b.jira_url)}" target="_blank" rel="noopener">${esc(b.jira_key)}</a>` : '–'}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">No confirmed bugs' + (sev || ss ? ' for this filter' : ' yet') + '. A suspect becomes a Bug only when it fails in all N reproduction runs.</div>';
+  renderNotConfirmed();
+}
+function renderNotConfirmed() {
+  const d = S.state?.selected; const nc = d ? d.suspects.filter(s => ['not_confirmed', 'error'].includes(s.status)) : [];
+  $('#ncSum').textContent = `Not confirmed in session #${S.sel || '–'} (${nc.length})`;
+  $('#ncList').innerHTML = nc.length ? nc.map(s => `<div class="item"><div class="main"><div class="t">${sevPill(s.severity)} ${esc(s.title)}</div><div class="small muted">${esc(s.reason || '')}</div></div><div class="side">${runsBoxes(s)}${suspectStatus(s)}</div></div>`).join('') : '<div class="empty">None.</div>';
+}
+$('#bugList').addEventListener('click', e => { const r = e.target.closest('tr[data-bug]'); if (r && !e.target.closest('a')) openBug(+r.dataset.bug); });
+
+function findBug(id) { return S.bugs.find(b => b.id === id) || (S.state?.selected?.suspects || []).find(s => s.id === id); }
+async function openBug(id) {
+  if (!findBug(id)) await loadBugs();
+  const b = findBug(id); if (!b) return;
+  S.drawer = id; S.jiraArm = null; drawBug(b);
+  $('#drawer').classList.add('open'); $('#drawerBack').classList.add('open');
+}
+function closeDrawer() { S.drawer = null; $('#drawer').classList.remove('open'); $('#drawerBack').classList.remove('open'); const v = $('#drawer video'); if (v) v.pause(); }
+$('#drawerBack').onclick = closeDrawer;
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+function drawBug(b) {
+  const jiraReady = S.state?.jira_ready;
+  const jiraBtn = b.jira_key ? `<a class="small" href="${esc(b.jira_url)}" target="_blank" rel="noopener"><button class="primary">Open ${esc(b.jira_key)} in Jira</button></a>`
+    : `<button id="jiraBtn" class="${S.jiraArm === b.id ? 'confirm' : 'primary'}" ${jiraReady ? '' : 'disabled title="Set [jira] in config.toml and JIRA_API_TOKEN"'}>${S.jiraArm === b.id ? 'Click again to create the ticket' : 'Open in Jira'}</button>`;
+  $('#drawer').innerHTML = `<div class="wh"><h2>${esc(b.title)}</h2><button class="icon" id="closeDr" aria-label="close">×</button></div>
+    <div class="actions" style="margin:6px 0 4px">${sevPill(b.severity)}<span class="pill">confidence ${b.confidence == null ? '–' : Math.round(b.confidence * 100) + '%'}</span><span class="pill bad">failed ${b.runs_failed}/${b.runs_total} runs</span><span class="muted small">session #${b.session_id}</span></div>
+    <div class="small mono muted">${esc(b.url)}</div>
+    ${b.video_url ? `<video controls preload="metadata" src="${esc(b.video_url)}"></video>` : '<div class="empty">No video recorded.</div>'}
+    <div class="actions">${jiraBtn}<span id="jiraMsg" class="small muted"></span>${b.spec_url ? `<a class="small" href="${esc(b.spec_url)}" target="_blank">repro.spec.ts</a>` : ''}</div>
+    <h4>Steps to reproduce</h4><ol>${(b.steps || []).map(s => `<li>${esc(s)}</li>`).join('') || '<li class="muted">not recorded</li>'}</ol>
+    <h4>Expected result</h4><div>${esc(b.expected)}</div>
+    <h4>Actual result</h4><div>${esc(b.actual)}</div>
+    ${(b.screenshot_urls || []).length ? `<h4>Screenshots</h4><div class="thumbs">${b.screenshot_urls.map(u => `<a href="${esc(u)}" target="_blank"><img src="${esc(u)}" alt="screenshot"></a>`).join('')}</div>` : ''}
+    ${(b.evidence || []).length ? `<h4>Console and network</h4><div class="pre">${esc(b.evidence.join('\n'))}</div>` : ''}
+    <h4>Reproduction runs</h4>${runsBoxes(b)}<div class="small muted" style="margin-top:4px">${esc(b.reason || '')}</div>
+    ${(b.runs || []).filter(r => r.message).slice(0, 1).map(r => `<div class="pre" style="margin-top:6px">${esc(r.message)}</div>`).join('')}`;
+  $('#closeDr').onclick = closeDrawer;
+  const jb = $('#jiraBtn'); if (jb) jb.onclick = () => jiraClick(b);
+}
+async function jiraClick(b) {
+  if (S.jiraArm !== b.id) { S.jiraArm = b.id; drawBug(b); setTimeout(() => { if (S.jiraArm === b.id) { S.jiraArm = null; if (S.drawer === b.id) drawBug(findBug(b.id)); } }, 5000); return; }
+  S.jiraArm = null; $('#jiraBtn').disabled = true; $('#jiraMsg').textContent = 'Creating the ticket and uploading the video…';
+  try {
+    const out = await api(`/api/bugs/${b.id}/jira`, {});
+    b.jira_key = out.key; b.jira_url = out.url; drawBug(b);
+    $('#jiraMsg').textContent = out.existing ? 'Already in Jira.' : `Created ${out.key}` + (out.attached ? ` with ${out.attached.length} attachment(s)` : '') + (out.warning ? ' — ' + out.warning : '');
+    loadBugs();
+  } catch (e) { drawBug(b); $('#jiraMsg').textContent = e.message; }
+}
+
+// ---------------------------------------------------------------- Report
+async function loadReport(force) {
+  if (!S.sel) { $('#repBody').innerHTML = '<div class="empty">No session selected.</div>'; return; }
+  const st = S.state?.selected?.session?.status;
+  if (!force && S.report.sid === S.sel && S.report.final) return;
+  try {
+    const r = await fetch(`/api/report/${S.sel}.md`); const md = await r.text();
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    S.report = {sid: S.sel, md, final: ['done', 'cancelled'].includes(st)};
+    $('#repBody').innerHTML = (S.report.final ? '' : '<div class="banner">Session still running: this is a live draft. The Reporter writes the final report at the end.</div>') + mdToHtml(md);
+    $('#repDl').href = `/api/report/${S.sel}.md?download=1`;
+  } catch (e) { $('#repBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  renderReportSide();
+}
+function renderReportSide() {
+  const d = S.state?.selected; if (!d) return;
+  const c = d.counts, s = d.session, sev = {};
+  d.suspects.filter(x => x.status === 'confirmed' && !x.duplicate_of).forEach(x => sev[x.severity] = (sev[x.severity] || 0) + 1);
+  const pv = c.pages_visited || 0, pt = c.pages_total || 0;
+  $('#repCov').innerHTML = `<div class="steprow"><span>Pages visited</span><span>${pv} / ${pt}</span></div><div class="bar"><span style="width:${pt ? 100 * pv / pt : 0}%"></span></div>
+    <div class="steprow"><span>Actions used</span><span>${s.actions_used} / ${s.max_actions}</span></div><div class="bar"><span style="width:${Math.min(100, 100 * s.actions_used / s.max_actions)}%"></span></div>
+    <div class="wmeta"><span>${d.tasks.filter(t => t.kind === 'test').length} charters</span><span>${d.suspects.length} suspects</span><span>${c.confirmed || 0} bugs</span><span>${c.not_confirmed || 0} not confirmed</span><span>$${(s.cost_usd || 0).toFixed(2)}</span></div>`;
+  $('#repSev').innerHTML = sevBars(sev);
+}
+function mdInline(t) {
+  return esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/(^|\s)\*([^*]+)\*/g, '$1<i>$2</i>');
+}
+function mdToHtml(md) {
+  const lines = md.split('\n'); let html = '', list = null, table = null;
+  const close = () => { if (list) { html += `</${list}>`; list = null; } if (table) { html += '</table>'; table = null; } };
+  for (const raw of lines) {
+    const l = raw.trimEnd();
+    let m;
+    if ((m = l.match(/^(#{1,4})\s+(.*)$/))) { close(); html += `<h${m[1].length}>${mdInline(m[2])}</h${m[1].length}>`; continue; }
+    if (/^\|.*\|$/.test(l)) {
+      if (/^\|[\s\-:|]+\|$/.test(l)) continue;
+      if (!table) { close(); table = true; html += '<table>'; }
+      html += '<tr>' + l.slice(1, -1).split('|').map(c => `<td>${mdInline(c.trim())}</td>`).join('') + '</tr>'; continue;
+    }
+    if ((m = l.match(/^\s*[-*]\s+(.*)$/))) { if (list !== 'ul') { close(); list = 'ul'; html += '<ul>'; } html += `<li>${mdInline(m[1])}</li>`; continue; }
+    if ((m = l.match(/^\s*\d+\.\s+(.*)$/))) { if (list !== 'ol') { close(); list = 'ol'; html += '<ol>'; } html += `<li>${mdInline(m[1])}</li>`; continue; }
+    if (l === '---') { close(); html += '<hr>'; continue; }
+    close(); if (l.trim()) html += `<p>${mdInline(l)}</p>`;
+  }
+  close(); return html;
+}
+
+setTab(['dash', 'new', 'live', 'map', 'bugs', 'report'].includes(S.tab) ? S.tab : 'dash');
+poll(); loadBugs();
+</script>
+</body>
+</html>

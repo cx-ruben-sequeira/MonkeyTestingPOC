@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {"name": "demo-app", "runtimeExecutable": "python3", "runtimeArgs": ["tests/demo_app/serve.py"], "port": 8099},
+    {"name": "monkeytesting", "runtimeExecutable": "bin/mt", "runtimeArgs": ["serve"], "port": 8766}
+  ]
+}

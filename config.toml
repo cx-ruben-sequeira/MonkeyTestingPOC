@@ -1,0 +1,39 @@
+# MonkeyTesting settings. Restart `bin/mt serve` after changing this file.
+
+[server]
+host = "127.0.0.1"
+port = 8766
+
+[workers]
+max_workers = 3          # parallel Claude workers across all sessions (also adjustable in the dashboard header)
+claude_bin = "claude"
+model = ""               # empty = your Claude Code default model
+effort = ""              # empty = default, or low | medium | high | xhigh | max
+max_budget_usd = 0       # spending cap per worker run, 0 = no cap
+max_attempts = 2         # tries per task when the claude process crashes
+
+[playwright]
+# Playwright MCP and Playwright Test are pinned in package.json (run ./install.sh once).
+browser = "chromium"     # chromium | firefox | webkit | chrome | msedge
+headless = true
+viewport = "1280x800"
+action_timeout_ms = 8000
+
+[limits]
+explorer_action_share = 0.25   # part of a session's action budget the Explorer may use
+max_charters = 8               # test areas the Explorer may hand out
+loop_repeat_limit = 4          # same action on the same page more than this many times stops the worker
+max_rounds = 6                 # extra rounds on discovered-but-unvisited pages while budget remains
+repro_timeout_s = 900          # cap for the N reproduction runs of one suspect
+stop_grace_s = 120             # at a limit, browser actions are refused and the worker gets this long to report
+
+[jira]
+# The token is read from the JIRA_API_TOKEN environment variable, never from this file.
+base_url = ""                 # e.g. "https://yourcompany.atlassian.net"
+email = ""                    # the Atlassian account the token belongs to
+project_key = ""              # e.g. "QA"
+issue_type = "Bug"
+labels = ["monkeytesting"]
+
+[paths]
+data_dir = "."           # relative to this file; holds data/, runs/ and logs/
