@@ -5,6 +5,8 @@ so reproduction starts while the tester keeps going.
 """
 from __future__ import annotations
 
+import re
+
 from . import Agent, render
 
 
@@ -34,6 +36,11 @@ class Tester(Agent):
     def add_suspect(self, data: dict) -> int | None:
         url = str(data.get("url") or "")
         if url and not self.in_scope(url):
+            return None
+        if re.search(r"\bcharter\b", str(data.get("expected") or ""), re.I):   # MonkeyTesting's own notes aren't a spec
+            self.store.add_event(self.sid, self.tid, "tester", "info",
+                                 f"suspect dropped, its expected result comes from MonkeyTesting's charter, not from the app, "
+                                 f"the user or a ticket: {str(data.get('title') or '')[:100]}")
             return None
         if url and not self.scope.allows(self.absolute(url)):   # the user's instructions limit where to test
             self.store.add_event(self.sid, self.tid, "tester", "info",

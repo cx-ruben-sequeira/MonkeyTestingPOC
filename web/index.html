@@ -80,7 +80,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 16px 20px 60px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; margin-bottom: 12px; }
 .wh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; }
 .wtitle { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.shot { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; border-radius: 6px; border: 1px solid var(--border); background: var(--soft); display: block; margin: 8px 0; }
+.shot { width: 100%; aspect-ratio: 16 / 10; object-fit: contain; object-position: center; cursor: zoom-in; border-radius: 6px; border: 1px solid var(--border); background: var(--soft); display: block; margin: 8px 0; }
 .shot.none { display: flex; align-items: center; justify-content: center; color: var(--faint); font-size: 12px; }
 .steprow { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 8px 0 4px; gap: 8px; }
 .bar { height: 6px; background: var(--soft); border-radius: 3px; overflow: hidden; }
@@ -129,7 +129,13 @@ table.t tr.click:hover td { background: var(--soft); }
 table.t td.sel, table.t th.sel { width: 26px; padding-right: 0; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 100%); background: var(--surface); z-index: 21; overflow-y: auto; padding: 18px 22px 40px; box-shadow: -8px 0 30px rgba(0,0,0,.2); display: none; }
 .drawer.open, .drawer-back.open { display: block; }
-.drawer video { width: 100%; border-radius: 8px; background: #000; margin: 8px 0; }
+.drawer video { width: 100%; max-height: min(60vh, 520px); object-fit: contain; border-radius: 8px; background: #000; margin: 8px 0 4px; display: block; }
+.media-tools { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px; }
+.drawer .thumbs img { cursor: zoom-in; }
+.lightbox { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.88); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
+.lightbox video, .lightbox img { max-width: 100%; max-height: calc(100vh - 80px); width: auto; height: auto; object-fit: contain; border-radius: 6px; background: #000; }
+.lightbox .lb-bar { display: flex; gap: 10px; margin-bottom: 10px; }
+.lightbox .lb-bar button, .lightbox .lb-bar a { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.3); }
 .drawer h4 { margin: 16px 0 4px; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .drawer ol { margin: 4px 0; padding-left: 22px; }
 .thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -204,7 +210,7 @@ table.t td.sel, table.t th.sel { width: 26px; padding-right: 0; }
         <details class="full"><summary>Browser, login and instructions</summary>
           <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 16px;margin-top:8px">
             <label class="f">Browser<select name="browser"><option>chromium</option><option>firefox</option><option>webkit</option><option>chrome</option><option>msedge</option></select></label>
-            <label class="f">Viewport<input name="viewport" value="1280x800" pattern="\d{3,4}x\d{3,4}"></label>
+            <label class="f">Viewport<input name="viewport" value="1920x1080" pattern="\d{3,4}x\d{3,4}"></label>
             <label class="f">Session name<input name="name" placeholder="optional"></label>
             <label class="f">Login URL<input name="login_url" type="url" placeholder="optional"></label>
             <label class="f">User / email<input name="username" autocomplete="off"></label>
@@ -429,7 +435,7 @@ async function repeatSession(id) {
   const f = $('#newForm'), set = (n, v) => { f.elements[n].value = v ?? ''; };
   f.reset();
   set('url', s.url); set('duration_min', s.duration_min); set('max_actions', s.max_actions); set('repeat_count', s.repeat_count); set('page_load_s', s.page_load_s || 120);
-  set('browser', s.browser || 'chromium'); set('viewport', s.viewport || '1280x800');
+  set('browser', s.browser || 'chromium'); set('viewport', s.viewport || '1920x1080');
   set('name', s.name && s.name !== new URL(s.url).host ? s.name : ''); set('login_url', s.login_url);
   const loginOrigin = s.login_url ? new URL(s.login_url).origin.toLowerCase() : '';
   set('extra_origins', (s.allowed_origins || []).filter(o => o && o !== loginOrigin).join(' '));
@@ -442,7 +448,7 @@ async function repeatSession(id) {
   S.repeat = {id: s.id, has_auth: !!s.has_auth};
   $('#reuseRow').classList.toggle('hide', !s.has_auth);
   $('#reuseText').textContent = `Reuse the saved login of session #${s.id} (leave User / Password empty, or type new ones to replace it)`;
-  const advanced = (s.browser && s.browser !== 'chromium') || (s.viewport && s.viewport !== '1280x800') || s.login_url || s.has_auth || s.instructions || (s.allowed_origins || []).length;
+  const advanced = (s.browser && s.browser !== 'chromium') || (s.viewport && s.viewport !== '1920x1080') || s.login_url || s.has_auth || s.instructions || (s.allowed_origins || []).length;
   f.querySelector('details').open = !!advanced;
   $('#repeatBanner').innerHTML = `<b>Repeating session #${s.id}</b> (${esc(s.name || s.url)}): its settings are filled in below. Change anything you like, then click Start session. <a href="#" id="repeatClear">Start from a blank form</a>`;
   $('#repeatBanner').classList.remove('hide');
@@ -514,6 +520,31 @@ $('#dashSessions').addEventListener('change', e => {
 $('#bulkDel').addEventListener('click', () => { if (S.picked && S.picked.size) askDelete([...S.picked]); });
 $('#bulkClear').addEventListener('click', () => { S.picked = new Set(); $$('#dashSessions input[type=checkbox]').forEach(c => { c.checked = false; }); renderBulk(); });
 $('#deleteBtn').addEventListener('click', () => { if (S.sel) askDelete([S.sel]); });
+
+// ---------------------------------------------------------------- media viewer (fits the screen)
+function openViewer(kind, url) {
+  closeViewer();
+  const box = document.createElement('div');
+  box.className = 'lightbox'; box.id = 'lightbox'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', 'Media viewer');
+  const time = kind === 'video' ? ($('.drawer video')?.currentTime || 0) : 0;
+  box.innerHTML = `<div class="lb-bar"><a class="button small" href="${esc(url)}" target="_blank" rel="noopener">open in a new tab</a><button class="small" type="button" data-lb-close>Close (Esc)</button></div>`
+    + (kind === 'video' ? `<video controls autoplay src="${esc(url)}"></video>` : `<img src="${esc(url)}" alt="screenshot">`);
+  box.addEventListener('click', e => { if (e.target === box || e.target.closest('[data-lb-close]')) closeViewer(); });
+  document.body.appendChild(box);
+  const v = box.querySelector('video');
+  if (v && time) v.addEventListener('loadedmetadata', () => { v.currentTime = time; }, {once: true});
+  const d = $('.drawer video'); if (d) d.pause();
+}
+function closeViewer() { const b = $('#lightbox'); if (b) b.remove(); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#lightbox')) { e.stopPropagation(); closeViewer(); } }, true);
+document.addEventListener('click', e => {
+  const v = e.target.closest('[data-enlarge-video]');
+  if (v) { e.preventDefault(); openViewer('video', v.dataset.enlargeVideo); return; }
+  const i = e.target.closest('[data-enlarge-img]');
+  if (i) { e.preventDefault(); openViewer('img', i.dataset.enlargeImg); return; }
+  const shot = e.target.closest('img.shot');
+  if (shot) { e.preventDefault(); openViewer('img', shot.getAttribute('src')); }
+});
 
 // ---------------------------------------------------------------- Jira connection
 $('#jiraPill').addEventListener('click', openJira);
@@ -714,12 +745,12 @@ function drawBug(b) {
   $('#drawer').innerHTML = `<div class="wh"><h2>${esc(b.title)}</h2><button class="icon" id="closeDr" aria-label="close">×</button></div>
     <div class="actions" style="margin:6px 0 4px">${sevPill(b.severity)}<span class="pill">confidence ${b.confidence == null ? '–' : Math.round(b.confidence * 100) + '%'}</span><span class="pill bad">failed ${b.runs_failed}/${b.runs_total} runs</span><span class="muted small">session #${b.session_id}</span></div>
     <div class="small mono muted">${esc(b.url)}</div>
-    ${b.video_url ? `<video controls preload="metadata" src="${esc(b.video_url)}"></video>` : '<div class="empty">No video recorded.</div>'}
+    ${b.video_url ? `<video controls preload="metadata" src="${esc(b.video_url)}"></video><div class="media-tools"><button class="small" type="button" data-enlarge-video="${esc(b.video_url)}" title="Open the video in a viewer that fits your screen">⤢ Enlarge</button><a class="small" href="${esc(b.video_url)}" target="_blank" rel="noopener">open in a new tab</a></div>` : '<div class="empty">No video recorded.</div>'}
     <div class="actions">${jiraBtn}<span id="jiraMsg" class="small muted"></span>${b.spec_url ? `<a class="small" href="${esc(b.spec_url)}" target="_blank">repro.spec.ts</a>` : ''}</div>
     <h4>Steps to reproduce</h4><ol>${(b.steps || []).map(s => `<li>${esc(s)}</li>`).join('') || '<li class="muted">not recorded</li>'}</ol>
     <h4>Expected result</h4><div>${esc(b.expected)}</div>
     <h4>Actual result</h4><div>${esc(b.actual)}</div>
-    ${(b.screenshot_urls || []).length ? `<h4>Screenshots</h4><div class="thumbs">${b.screenshot_urls.map(u => `<a href="${esc(u)}" target="_blank"><img src="${esc(u)}" alt="screenshot"></a>`).join('')}</div>` : ''}
+    ${(b.screenshot_urls || []).length ? `<h4>Screenshots</h4><div class="thumbs">${b.screenshot_urls.map(u => `<a href="${esc(u)}" target="_blank" data-enlarge-img="${esc(u)}"><img src="${esc(u)}" alt="screenshot"></a>`).join('')}</div>` : ''}
     ${(b.evidence || []).length ? `<h4>Console and network</h4><div class="pre">${esc(b.evidence.join('\n'))}</div>` : ''}
     <h4>Reproduction runs</h4>${runsBoxes(b)}<div class="small muted" style="margin-top:4px">${esc(b.reason || '')}</div>
     ${(b.runs || []).filter(r => r.message).slice(0, 1).map(r => `<div class="pre" style="margin-top:6px">${esc(r.message)}</div>`).join('')}`;

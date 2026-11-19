@@ -16,7 +16,7 @@ max_attempts = 2         # tries per task when the claude process crashes
 # Playwright MCP and Playwright Test are pinned in package.json (run ./install.sh once).
 browser = "chromium"     # chromium | firefox | webkit | chrome | msedge
 headless = true
-viewport = "1280x800"
+viewport = "1920x1080"   # browser window of every worker and reproduction; videos record at this size
 action_timeout_ms = 8000
 
 [limits]

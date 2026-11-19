@@ -36,7 +36,7 @@ export default defineConfig({
     browserName: '__BROWSER__',__CHANNEL__
     headless: true,
     viewport: { width: __W__, height: __H__ },
-    video: 'on',
+    video: { mode: 'on', size: { width: __W__, height: __H__ } },   // full size, not scaled down
     screenshot: 'on',
     trace: 'retain-on-failure',
     actionTimeout: 10000,
@@ -70,7 +70,7 @@ def write_config(work_dir, browser: str, viewport: str, page_load_s: int = DEFAU
     if browser not in ("chromium", "firefox", "webkit"):
         browser = "chromium"
     m = re.match(r"^(\d{3,4})x(\d{3,4})$", viewport or "")
-    w, h = (m.group(1), m.group(2)) if m else ("1280", "800")
+    w, h = (m.group(1), m.group(2)) if m else ("1920", "1080")
     text = (CONFIG_TS.replace("__BROWSER__", browser).replace("__CHANNEL__", channel)
             .replace("__W__", w).replace("__H__", h))
     load_ms = max(5, min(600, int(page_load_s or DEFAULT_PAGE_LOAD_S))) * 1000
@@ -174,13 +174,65 @@ export const mt = {
       throw new Error(`MT-SETUP: ${what} never appeared`);
     }
   },
+  /** The element's text has stopped changing and nothing on the page is still loading (spinner, aria-busy,
+   *  progress bar). Use it before reading a count, total or any value the bug is about. */
+  async settled(locator: Locator, what = 'the value', quietMs = 2000) {
+    const el = locator.first();
+    try {
+      await expect(el).toBeVisible();
+    } catch (e) {
+      throw new Error(`MT-SETUP: ${what} never appeared`);
+    }
+    const page = el.page();
+    const busy = page.locator('[aria-busy="true"], [role="progressbar"]');
+    const deadline = Date.now() + Math.max(10000, test.info().timeout / 2);
+    let last = await el.innerText().catch(() => '');
+    let since = Date.now();
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(250);
+      const now = await el.innerText().catch(() => '');
+      if (now !== last) { last = now; since = Date.now(); continue; }
+      const loading = /^\\s*$|^\\s*loading/i.test(now) || await busy.first().isVisible().catch(() => false);
+      // "0", "0–0 of 0", "-", "…" are what many pages show before their data arrives: such a value only
+      // counts as final after it stayed the same for 10 s (a real zero still settles, just later)
+      const placeholder = /^\\s*(0|0\\s*[–-]\\s*0\\s+of\\s+0|[-–—]|\\.{3}|…|\\(0\\))\\s*$/i.test(now);
+      const needed = placeholder ? Math.max(quietMs, 10000) : quietMs;
+      if (!loading && Date.now() - since >= needed) return now;
+    }
+    throw new Error(`MT-SETUP: ${what} never settled; the page was still loading (last value: "${last.slice(0, 80)}")`);
+  },
   /** Something the bug depends on must be true first (e.g. the data or setting exists). */
   precondition(ok: boolean, what: string) {
     if (!ok) throw new Error(`MT-PRECONDITION: ${what}`);
   },
 };
 """
-CHECKPOINT_RE = re.compile(r"\bmt\.(reached|ready)\s*\(")
+CHECKPOINT_RE = re.compile(r"\bmt\.(reached|ready|settled)\s*\(")
+RECEIVED_RE = re.compile(r"^\s*Received(?: string| number| value)?:\s*(.+?)\s*$", re.M)
+NUMBER_RE = re.compile(r"-?\d[\d,.]*")
+EMPTY_VALUES = {"0", "null", "undefined", '""', "''", "[]", "{}", "false", "nan"}
+
+
+def _numbers(text: str) -> set[str]:
+    return {n.replace(",", "").rstrip(".") for n in NUMBER_RE.findall(text or "")}
+
+
+def received_mismatch(message: str, actual: str) -> str | None:
+    """A run can fail on the right line and still not reproduce the bug: the bug reports 413,552 but the run
+    read 0 because the data hadn't loaded. Returns why the received value contradicts the reported one."""
+    m = RECEIVED_RE.search(ANSI_RE.sub("", message or ""))
+    if not m:
+        return None
+    got = m.group(1).strip()
+    plain = got.strip("\"'").replace(",", "")
+    reported = _numbers(actual)
+    if got.lower() in EMPTY_VALUES or not plain:
+        if plain.lower() not in {x.lower() for x in reported} and not re.search(r"\b(empty|blank|nothing|zero|no )", actual or "", re.I):
+            return f"the test read {got} (an empty value: the data probably hadn't loaded), not what the bug reports"
+        return None
+    if NUMBER_RE.fullmatch(plain) and reported and plain.rstrip(".") not in reported:
+        return f"the test read {got}, but the bug reports {', '.join(sorted(reported)[:3])}"
+    return None
 IMPORT_RE = re.compile(r"""from\s+['"]@playwright/test['"]""")
 
 

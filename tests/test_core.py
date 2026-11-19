@@ -501,6 +501,15 @@ class TestRealRepro(Base):
                               "  await expect(page.getByText('Custom states')).toBeVisible();",
                               "a precondition isn't met")
 
+    def test_settled_waits_for_the_real_value(self):
+        d = self.tmp / "runs" / "s1" / "suspect-77"
+        self.spec(d, "  await page.setContent('<div role=\"status\" id=\"c\">0</div><script>setTimeout(() => "
+                     "{ document.getElementById(\"c\").textContent = \"413,552\"; }, 1500);</script>');\n"
+                     "  const text = await mt.settled(page.locator('#c'), 'the total', 1000);\n"
+                     "  expect(text).toBe('93,552');")
+        out = asyncio.run(repro.run_repeats(self.cfg, d, 1))
+        self.assertIn("Received: \"413,552\"", out["runs"][0]["message"])   # read after it loaded, not 0
+
     def test_passing_spec_not_confirmed(self):
         d = self.tmp / "runs" / "s1" / "suspect-2"
         self.spec(d, "  await page.goto('http://localhost:8098/about');\n"
@@ -1295,6 +1304,58 @@ class TestLoginFirst(Base):
         flag.write_text("x", encoding="utf-8")
         self.assertIn("deny", nav(f"{DEMO}/pricing"))             # after login: focus rules apply
         self.assertEqual(nav(f"{DEMO}/login-organization"), "")   # and login pages stay allowed
+
+
+# ---------------------------------------------------------------- a failure must match the reported bug
+class TestReportedValue(Base):
+    def test_mismatch_rules(self):
+        miss = repro.received_mismatch
+        self.assertIn("empty value", miss("Expected: 93552\nReceived: 0", "Tab header shows (413,552)"))
+        self.assertIn("bug reports 413552", miss("Expected: 93552\nReceived: 120", "Tab header shows (413,552)"))
+        self.assertIsNone(miss("Expected: 93552\nReceived: 413552", "Tab header shows (413,552)"))
+        self.assertIsNone(miss("Expected: < 500\nReceived:   500", "GET /api/report -> 500"))
+        self.assertIsNone(miss("Expected: visible\nReceived: hidden", "the error message is missing"))
+        self.assertIsNone(miss('Expected: "Saved"\nReceived: ""', "the toast is empty after saving"))
+
+    def test_reproducer_does_not_confirm_a_different_failure(self):
+        from mtlib import agents
+        from mtlib.dispatcher import session_dir
+        sid = self.new_session()
+        sus = self.store.add_suspect(sid, None, {"title": "Count is wrong", "url": DEMO + "/reports",
+                                                 "actual": "Tab header shows (413,552)", "expected": "93,552"})
+        tid = self.store.add_task(sid, "repro", "r", suspect_id=sus)
+
+        async def got_zero(cfg, work_dir, n, env_extra=None, on_progress=None, timeout_s=None):
+            return {"verdict": "confirmed", "reason": "failed 3/3 on the same assertion", "total": 3, "failed": 3,
+                    "runs": [{"i": i, "status": "failed", "message": "Expected: 93552\nReceived: 0"} for i in (1, 2, 3)]}
+        sdir = session_dir(self.cfg, sid)
+        ag = agents.make(agents.Context(cfg=self.cfg, store=self.store, srow=self.store.get_session(sid),
+                                        task=self.store.get_task(tid), task_dir=sdir / f"t{tid}", session_dir=sdir,
+                                        repro_fn=got_zero))
+        asyncio.run(ag.finish(None, None))
+        s = self.store.get_suspect(sus)
+        self.assertEqual(s["status"], "not_confirmed")
+        self.assertIn("read 0", s["reason"])
+
+    def test_charter_expectations_are_dropped(self):
+        from mtlib import agents
+        from mtlib.dispatcher import session_dir
+        sid = self.new_session()
+        tid = self.store.add_task(sid, "test", "c")
+        sdir = session_dir(self.cfg, sid)
+        ag = agents.make(agents.Context(cfg=self.cfg, store=self.store, srow=self.store.get_session(sid),
+                                        task=self.store.get_task(tid), task_dir=sdir / f"t{tid}", session_dir=sdir))
+        self.assertIsNone(ag.add_suspect({"title": "Count differs", "url": DEMO + "/", "actual": "413,552",
+                                          "expected": "Tab count should match charter specification of 93,552"}))
+        self.assertIsNotNone(ag.add_suspect({"title": "Badge and list disagree", "url": DEMO + "/", "actual": "120 vs 80",
+                                             "expected": "the badge count equals the rows in the list"}))
+
+    def test_videos_record_at_full_size(self):
+        d = self.tmp / "runs" / "s1" / "suspect-9"
+        text = repro.write_config(d, "chromium", "1920x1080").read_text(encoding="utf-8")
+        self.assertIn("viewport: { width: 1920, height: 1080 }", text)
+        self.assertIn("video: { mode: 'on', size: { width: 1920, height: 1080 } }", text)
+        self.assertEqual(self.store.get_session(self.new_session())["viewport"], "1920x1080")
 
 
 if __name__ == "__main__":

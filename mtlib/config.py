@@ -56,7 +56,7 @@ class Config:
     max_attempts: int = 2
     browser: str = "chromium"
     headless: bool = True
-    viewport: str = "1280x800"
+    viewport: str = "1920x1080"
     action_timeout_ms: int = 8000
     explorer_action_share: float = 0.25
     max_charters: int = 8

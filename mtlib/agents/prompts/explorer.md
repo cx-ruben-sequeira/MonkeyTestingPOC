@@ -15,6 +15,7 @@ Steps
    EDGE: {"from": "<url>", "to": "<url>", "label": "<link or button text>"}
 5. When you have used about two thirds of your actions (or seen every page), stop browsing and split the app into at most $max_charters test charters, each a coherent area with a goal, and print one line per charter:
    CHARTER: {"area": "<short name>", "goal": "<what to test and which risks>", "start_url": "<url>", "focus": ["<form validation>", "<boundary values>", "<error handling>"]}
+   Charters describe areas, flows and risks. Never put numbers, counts or other data you saw (e.g. "93,552 items") into a goal: data changes all the time, and testers must not treat what you saw as what the app should show.
    Every charter's start_url must be inside the focus area. Base the charters on the user's instructions first; then prefer forms, state-changing flows, search/filter, and anything that looked fragile.
 
 Your FINAL message must repeat every CHARTER line (and a SUSPECT line, in the tester format, for any obvious bug you happened to see), then a two-line summary of the app.

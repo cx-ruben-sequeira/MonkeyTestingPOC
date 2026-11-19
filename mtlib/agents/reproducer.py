@@ -89,6 +89,13 @@ class Reproducer(Agent):
         out = await run(self.cfg, self.work_dir, n, env_extra=read_secrets(self.ctx.session_dir), timeout_s=budget,
                         on_progress=progress)
         verdict = out.get("verdict")
+        if verdict == "confirmed":
+            # every run failed on the same line, but did it fail the way the bug says?
+            first = next((r for r in out.get("runs") or [] if r.get("status") in ("failed", "timedOut")), {})
+            why = repro.received_mismatch(first.get("message") or "", self.suspect.get("actual") or "")
+            if why:
+                verdict = "not_confirmed"
+                out["reason"] = f"not a bug: {why}, so the runs didn't reproduce it"
         status = {"confirmed": "confirmed", "not_confirmed": "not_confirmed"}.get(verdict, "error")
         reason = out.get("reason") or ""
         if self.spec_marker.get("status") == "passes" and self.spec_marker.get("reason"):

@@ -160,7 +160,9 @@ Prompts are in `mtlib/agents/prompts/`. Each role is one class in `mtlib/agents/
   - its `mt.precondition(...)` checks held (for example, "a custom state exists");
   - it didn't end on a login page.
 
-  A spec with no checkpoint can't confirm a bug. Workers are also told that a missing item is only a bug after waiting for the list to load, scrolling it to the end, using its search box and checking that the item exists.
+  A spec with no checkpoint can't confirm a bug.
+
+  The failure must also match the report. When the bug is about a value, every run must fail with the value the bug reports. A run that reads 0 or an empty value (the data hadn't loaded), or a different number, doesn't confirm it. `mt.settled(locator)` waits until a value stops changing and no spinner shows, and placeholder values such as "0" or "0–0 of 0" must hold for 10 s before they count. Expected results must come from your instructions, a ticket, the app contradicting itself, or common sense, never from MonkeyTesting's own charters or earlier readings. Workers are also told that a missing item is only a bug after waiting for the list to load, scrolling it to the end, using its search box and checking that the item exists.
 - **Shared context:** each tester sees the map, the charters already done and the suspects already found. Duplicate suspects (same page and same title words) are dropped.
 - **Loop guard:** if the same action on the same page is repeated more than `loop_repeat_limit` times, that worker is stopped.
 - **Recovery:** a crashed worker is retried (`max_attempts`). If the Explorer fails for good, the session falls back to one whole-app charter.
