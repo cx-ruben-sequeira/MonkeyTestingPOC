@@ -73,6 +73,9 @@ def create(cfg: Config, store: Store, form: dict) -> dict:
         if origin(login_url) not in [origin(url)] + extra:
             extra.append(origin(login_url))
     user, password = str(form.get("username") or ""), str(form.get("password") or "")
+    reused_from = None
+    if form.get("reuse_login_from") not in (None, "", False) and not (user or password):
+        user, password, reused_from = _saved_login(cfg, store, form.get("reuse_login_from"))
     if any(c in user + password for c in "\r\n"):
         raise FormError("credentials can't contain line breaks")
     warning = None
@@ -86,10 +89,34 @@ def create(cfg: Config, store: Store, form: dict) -> dict:
         mode=mode, duration_min=duration, max_actions=max_actions, repeat_count=repeats, browser=browser,
         viewport=viewport, instructions=str(form.get("instructions") or "")[:4000], allowed_origins=extra,
         allow_destructive=1 if form.get("allow_destructive") else 0, login_url=login_url or None,
-        has_auth=1 if (user or password) else 0, status="queued")
+        has_auth=1 if (user or password) else 0,
+        shots_every_action=1 if form.get("shots_every_action") else 0, status="queued")
     write_session_files(cfg, sid, [origin(url)] + extra, bool(form.get("allow_destructive")), user, password)
     store.add_event(sid, None, "dashboard", "info", f"session queued: {url}, {mode}, {duration} min, N={repeats}")
+    if form.get("repeat_of") not in (None, ""):
+        try:
+            store.add_event(sid, None, "dashboard", "info", f"repeat of session #{int(form['repeat_of'])}"
+                            + (f", reusing its saved login" if reused_from else ""))
+        except (TypeError, ValueError):
+            pass
     return {"id": sid, "warning": warning}
+
+
+def _saved_login(cfg: Config, store: Store, raw) -> tuple[str, str, int]:
+    """The username and password a previous session saved in its own secrets.env (never in the database)."""
+    from .agents.reproducer import read_secrets
+    from .dispatcher import session_dir
+    try:
+        old = int(raw)
+    except (TypeError, ValueError):
+        raise FormError("reuse_login_from must be a session number")
+    row = store.get_session(old)
+    if not row or not row["has_auth"]:
+        raise FormError(f"session #{old} has no saved login to reuse; type the username and password")
+    saved = read_secrets(session_dir(cfg, old))
+    if not saved:
+        raise FormError(f"the saved login of session #{old} is gone; type the username and password")
+    return saved.get("MT_USERNAME", ""), saved.get("MT_PASSWORD", ""), old
 
 
 def write_session_files(cfg: Config, sid: int, origins: list[str], allow_destructive: bool,

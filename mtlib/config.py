@@ -1,14 +1,47 @@
-"""Settings from config.toml, with defaults for every key."""
+"""Settings from config.toml, with defaults for every key.
+
+Secrets (JIRA_API_TOKEN) come from the environment, or from a git-ignored `.env` file next to
+config.toml, so there are no per-shell `export` / `$env:` differences between operating systems.
+MT_DATA_DIR (environment or .env) moves data/, runs/ and logs/ elsewhere.
+"""
 from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.toml"
+ENV_KEYS = ("JIRA_API_TOKEN", "MT_DATA_DIR")
+
+
+def clean_path(raw, base: Path | None = None) -> str:
+    """Absolute, normalized path; relative values resolve against `base` (default: the repo root)."""
+    raw = os.path.expanduser(os.fspath(raw))
+    if not os.path.isabs(raw):
+        raw = os.path.join(os.fspath(base or ROOT), raw)
+    return os.path.normpath(os.path.abspath(raw))
+
+
+def load_dotenv(path) -> None:
+    """KEY=value lines from .env into os.environ (only known keys, never overriding the real environment)."""
+    full = os.path.normpath(os.path.abspath(os.fspath(path)))
+    if os.path.basename(full) != ".env" or not os.path.isfile(full):
+        return
+    with open(full, "r", encoding="utf-8-sig") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k.startswith("export "):
+                k = k[len("export "):].strip()
+            if k in ENV_KEYS and k not in os.environ:
+                os.environ[k] = v
 
 
 @dataclass
@@ -35,12 +68,24 @@ class Config:
     jira_email: str = ""
     jira_project_key: str = ""
     jira_issue_type: str = "Bug"
-    jira_labels: list[str] = field(default_factory=lambda: ["monkeytesting"])
+    jira_labels: list[str] = None
     data_dir: Path = ROOT
+
+    def __post_init__(self):
+        if self.jira_labels is None:
+            self.jira_labels = ["monkeytesting"]
 
     @property
     def claude_cmd(self) -> list[str]:
-        return shlex.split(self.claude_bin)
+        """The claude command as an argument list; a bare program name is looked up on PATH
+        (shutil.which also finds claude.cmd / claude.exe on Windows)."""
+        parts = shlex.split(self.claude_bin, posix=os.name != "nt")
+        parts = [p.strip('"') for p in parts]
+        if parts and not os.path.isabs(parts[0]):
+            found = shutil.which(parts[0])
+            if found:
+                parts[0] = found
+        return parts
 
     @property
     def db_path(self) -> Path:
@@ -57,7 +102,7 @@ class Config:
     @property
     def node_root(self) -> Path:
         """Folder holding package.json and node_modules with the pinned Playwright packages."""
-        return ROOT
+        return ROOT / "runner"
 
     @property
     def mcp_cli(self) -> Path:
@@ -80,12 +125,31 @@ class Config:
             d.mkdir(parents=True, exist_ok=True)
 
 
+def data_dir_from(env_value: str | None, config_dir: Path, configured: str) -> Path:
+    """MT_DATA_DIR when set, else [paths] data_dir relative to the config file. Never an existing file."""
+    path = clean_path(env_value) if env_value else clean_path(configured or ".", config_dir)
+    if os.path.isfile(path):
+        raise ValueError(f"data folder is a file: {path}")
+    return Path(path)
+
+
+def read_toml(path) -> dict:
+    """The parsed config file, or {} when there is none. Only .toml files are read."""
+    full = os.path.normpath(os.path.abspath(os.fspath(path)))
+    if not full.endswith(".toml"):
+        raise ValueError(f"config must be a .toml file: {full}")
+    if not os.path.isfile(full):
+        return {}
+    with open(full, "rb") as fh:
+        return tomllib.load(fh)
+
+
 def load(path: Path | None = None) -> Config:
-    path = path or CONFIG_PATH
-    raw: dict = {}
-    if path.exists():
-        with open(path, "rb") as fh:
-            raw = tomllib.load(fh)
+    path = Path(clean_path(path or CONFIG_PATH))
+    load_dotenv(path.parent / ".env")
+    if path.parent != ROOT:
+        load_dotenv(ROOT / ".env")
+    raw = read_toml(path)
     s, w, p = raw.get("server", {}), raw.get("workers", {}), raw.get("playwright", {})
     lim, j, paths = raw.get("limits", {}), raw.get("jira", {}), raw.get("paths", {})
     cfg = Config()
@@ -112,5 +176,5 @@ def load(path: Path | None = None) -> Config:
     cfg.jira_project_key = j.get("project_key", "") or ""
     cfg.jira_issue_type = j.get("issue_type", cfg.jira_issue_type) or "Bug"
     cfg.jira_labels = list(j.get("labels", cfg.jira_labels) or [])
-    cfg.data_dir = (path.parent / paths.get("data_dir", ".")).resolve()
+    cfg.data_dir = data_dir_from(os.environ.get("MT_DATA_DIR"), path.parent, str(paths.get("data_dir", ".")))
     return cfg

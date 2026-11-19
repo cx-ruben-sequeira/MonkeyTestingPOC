@@ -8,15 +8,16 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 
-prompt = sys.stdin.read()
+prompt = sys.stdin.buffer.read().decode("utf-8", errors="replace")
 role = (re.search(r"ROLE:\s*(\w+)", prompt) or re.search(r"(x)", "x")).group(1)
 mode = os.environ.get("FAKE_CLAUDE_MODE", "normal")
 delay = float(os.environ.get("FAKE_CLAUDE_DELAY", "0.02"))
 system = ""
 if "--append-system-prompt-file" in sys.argv:
-    with open(sys.argv[sys.argv.index("--append-system-prompt-file") + 1]) as fh:
+    with open(sys.argv[sys.argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as fh:
         system = fh.read()
 BASE = (re.search(r"Target application: (\S+)", system) or re.search(r"(http://demo\.test)", "http://demo.test")).group(1)
 BASE = BASE.rstrip("/")
@@ -58,7 +59,7 @@ emit({"type": "system", "subtype": "init", "session_id": f"fake-{role}",
       "mcp_servers": [{"name": "playwright", "status": "connected"}]})
 
 if mode == "crash" or (mode == "crash_once" and role == "explorer"):
-    flag = os.path.join(os.environ.get("FAKE_CLAUDE_STATE", "/tmp"), "crashed-once")
+    flag = os.path.join(os.environ.get("FAKE_CLAUDE_STATE") or tempfile.gettempdir(), "crashed-once")
     if mode == "crash" or not os.path.exists(flag):
         open(flag, "w").close()
         print("boom: simulated crash", file=sys.stderr)
@@ -119,7 +120,7 @@ elif role == "tester":
     done(f"Tested {area}.")
 elif role == "reproducer":
     spec = os.path.join(os.getcwd(), "repro.spec.ts")
-    with open(spec, "w") as fh:
+    with open(spec, "w", encoding="utf-8") as fh:
         fh.write("import { test, expect } from '@playwright/test';\ntest('repro', async ({ page }) => {});\n")
     tool("Write", {"file_path": spec})
     say('SPEC: {"file": "repro.spec.ts", "assertion": "expect(...)", "status": "fails"}')

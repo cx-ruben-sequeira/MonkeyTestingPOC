@@ -14,7 +14,8 @@ import shutil
 from pathlib import Path
 
 from .config import Config
-from .worker import checked_argv
+from . import proc as procs
+from .worker import SECRET_ENV, checked_argv, program, rel_arg
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -169,23 +170,24 @@ async def _run_once(cfg: Config, base: str, index: int, env_extra: dict, timeout
     if os.path.isfile(report_path):
         os.remove(report_path)
     env = dict(os.environ)
-    env.pop("JIRA_API_TOKEN", None)
+    for k in SECRET_ENV:
+        env.pop(k, None)
     env.update(env_extra)
     env["PLAYWRIGHT_JSON_OUTPUT_NAME"] = report_path
     env["NODE_PATH"] = str(cfg.node_root / "node_modules")
     env.setdefault("CI", "1")
-    node = shutil.which("node") or "node"
-    argv = checked_argv([node, str(cfg.playwright_cli), "test", "--config", "playwright.config.ts",
+    node = program("node")
+    argv = checked_argv([node, rel_arg(cfg.playwright_cli, base), "test", "--config", "playwright.config.ts",
                          "--output", f"test-results/run-{index}", "--reporter", "json"])
     proc = await asyncio.create_subprocess_exec(*[shlex.quote(a) for a in argv], cwd=base, env=env,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                                                start_new_session=True)
+                                                **procs.group_kwargs())
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await procs.stop_tree(proc, grace_s=3)
         return [], "reproduction run timed out"
+    procs.reap_group(proc.pid)
     report = None
     if os.path.isfile(report_path):
         with open(report_path, "r", encoding="utf-8") as fh:

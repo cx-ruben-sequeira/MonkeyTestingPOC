@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     allow_destructive INTEGER NOT NULL DEFAULT 0,
     login_url TEXT,
     has_auth INTEGER NOT NULL DEFAULT 0,
+    shots_every_action INTEGER NOT NULL DEFAULT 0,
+    delete_state TEXT,
     status TEXT NOT NULL,
     phase TEXT,
     seed INTEGER,
@@ -156,7 +158,7 @@ CREATE TABLE IF NOT EXISTS usage (
 SESSION_DEFAULTS = {
     "name": None, "url": None, "origin": None, "mode": None, "duration_min": None, "max_actions": None,
     "repeat_count": None, "browser": None, "viewport": None, "instructions": "", "allowed_origins": "[]",
-    "allow_destructive": 0, "login_url": None, "has_auth": 0, "status": "queued", "phase": None, "seed": None,
+    "allow_destructive": 0, "login_url": None, "has_auth": 0, "shots_every_action": 0, "delete_state": None, "status": "queued", "phase": None, "seed": None,
     "rounds": 0, "actions_used": 0, "cost_usd": 0, "cancel_requested": 0, "created_at": None,
     "started_at": None, "deadline": None, "budget_hit_at": None, "finished_at": None, "report_path": None,
     "summary": None, "error": None,
@@ -181,13 +183,13 @@ JSON_COLS = {"allowed_origins", "charter", "components", "steps", "evidence", "r
 INSERT_SESSION = """
 INSERT INTO sessions (
     name, url, origin, mode, duration_min, max_actions, repeat_count, browser, viewport,
-    instructions, allowed_origins, allow_destructive, login_url, has_auth, status, phase, seed,
-    rounds, actions_used, cost_usd, cancel_requested, created_at, started_at, deadline,
+    instructions, allowed_origins, allow_destructive, login_url, has_auth, shots_every_action, delete_state, status,
+    phase, seed, rounds, actions_used, cost_usd, cancel_requested, created_at, started_at, deadline,
     budget_hit_at, finished_at, report_path, summary, error)
 VALUES (
     :name, :url, :origin, :mode, :duration_min, :max_actions, :repeat_count, :browser, :viewport,
-    :instructions, :allowed_origins, :allow_destructive, :login_url, :has_auth, :status, :phase,
-    :seed, :rounds, :actions_used, :cost_usd, :cancel_requested, :created_at, :started_at,
+    :instructions, :allowed_origins, :allow_destructive, :login_url, :has_auth, :shots_every_action, :delete_state,
+    :status, :phase, :seed, :rounds, :actions_used, :cost_usd, :cancel_requested, :created_at, :started_at,
     :deadline, :budget_hit_at, :finished_at, :report_path, :summary, :error)
 """
 UPDATE_SESSION = """
@@ -206,6 +208,8 @@ UPDATE sessions SET
     allow_destructive = CASE WHEN :u_allow_destructive THEN :allow_destructive ELSE allow_destructive END,
     login_url = CASE WHEN :u_login_url THEN :login_url ELSE login_url END,
     has_auth = CASE WHEN :u_has_auth THEN :has_auth ELSE has_auth END,
+    shots_every_action = CASE WHEN :u_shots_every_action THEN :shots_every_action ELSE shots_every_action END,
+    delete_state = CASE WHEN :u_delete_state THEN :delete_state ELSE delete_state END,
     status = CASE WHEN :u_status THEN :status ELSE status END,
     phase = CASE WHEN :u_phase THEN :phase ELSE phase END,
     seed = CASE WHEN :u_seed THEN :seed ELSE seed END,
@@ -302,6 +306,9 @@ WHERE id = :id
 """
 
 SELECT_SESSION = "SELECT * FROM sessions WHERE id = ?"
+SESSION_COLUMNS = "PRAGMA table_info(sessions)"
+ADD_SHOTS_COLUMN = "ALTER TABLE sessions ADD COLUMN shots_every_action INTEGER NOT NULL DEFAULT 0"
+ADD_DELETE_STATE_COLUMN = "ALTER TABLE sessions ADD COLUMN delete_state TEXT"
 LIST_SESSIONS = "SELECT * FROM sessions ORDER BY id DESC LIMIT ?"
 ADD_ACTIONS = "UPDATE sessions SET actions_used = actions_used + ? WHERE id = ?"
 SELECT_ACTIONS = "SELECT actions_used FROM sessions WHERE id = ?"
@@ -310,7 +317,7 @@ TASKS_FOR = "SELECT * FROM tasks WHERE session_id = ? ORDER BY id"
 RUNNING_TASKS = "SELECT * FROM tasks WHERE status = 'running' ORDER BY worker_slot"
 NEXT_TASK = ("SELECT t.* FROM tasks t JOIN sessions s ON s.id = t.session_id "
              "WHERE t.status = 'queued' AND s.status IN ('running', 'reporting') AND s.cancel_requested = 0 "
-             "ORDER BY t.priority DESC, t.id ASC LIMIT 1")
+             "AND s.delete_state IS NULL ORDER BY t.priority DESC, t.id ASC LIMIT 1")
 CLAIM_TASK = "UPDATE tasks SET status = 'running', started_at = ?, attempts = attempts + 1 WHERE id = ?"
 RECOVER_TASKS = ("UPDATE tasks SET status = 'queued', worker_slot = NULL, current_action = NULL "
                  "WHERE status = 'running'")
@@ -341,6 +348,18 @@ COUNT_SESSIONS = "SELECT COUNT(*) n, COUNT(DISTINCT origin) apps FROM sessions"
 BUG_SEVERITY = "SELECT severity, COUNT(*) n FROM suspects WHERE status = 'confirmed' GROUP BY severity"
 SUSPECT_COUNTS = "SELECT status, COUNT(*) n FROM suspects WHERE session_id = ? GROUP BY status"
 PAGE_COUNTS = ("SELECT COUNT(*) total, COALESCE(SUM(visited), 0) visited FROM pages WHERE session_id = ?")
+# ---- deleting a session: every table that holds the session's rows, children first
+COUNT_EVENTS = "SELECT COUNT(*) n FROM events WHERE session_id = ?"
+SESSION_TICKETS = "SELECT jira_key FROM suspects WHERE session_id = ? AND jira_key IS NOT NULL ORDER BY id"
+DELETE_STATEMENTS = (
+    ("usage", "DELETE FROM usage WHERE session_id = ?"),
+    ("events", "DELETE FROM events WHERE session_id = ?"),
+    ("edges", "DELETE FROM edges WHERE session_id = ?"),
+    ("pages", "DELETE FROM pages WHERE session_id = ?"),
+    ("suspects", "DELETE FROM suspects WHERE session_id = ?"),
+    ("tasks", "DELETE FROM tasks WHERE session_id = ?"),
+    ("sessions", "DELETE FROM sessions WHERE id = ?"),
+)
 GET_SETTING = "SELECT value FROM settings WHERE key = ?"
 SET_SETTING = ("INSERT INTO settings(key, value) VALUES(?, ?) "
                "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -415,6 +434,15 @@ class Store:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._local = threading.local()
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Columns added after the first release; databases created before them get them here."""
+        cols = {r["name"] for r in self.conn.execute(SESSION_COLUMNS).fetchall()}
+        if "shots_every_action" not in cols:
+            self.conn.execute(ADD_SHOTS_COLUMN)
+        if "delete_state" not in cols:
+            self.conn.execute(ADD_DELETE_STATE_COLUMN)
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -613,3 +641,25 @@ class Store:
     def usage_total(self) -> dict:
         r = self.conn.execute(USAGE_TOTAL).fetchone()
         return {"cost_usd": r["c"], "output_tokens": r["o"], "input_tokens": r["i"]}
+
+    # ------------------------------------------------------------ deleting a session
+    def delete_preview(self, sid: int) -> dict | None:
+        """What deleting the session removes from the database (the run folder is measured by the caller)."""
+        s = self.get_session(sid)
+        if not s:
+            return None
+        counts = self.session_counts(sid)
+        return {"session": {k: s[k] for k in ("id", "name", "url", "status", "delete_state")},
+                "bugs": counts.get("confirmed", 0),
+                "suspects": sum(v for k, v in counts.items() if not k.startswith("pages")),
+                "events": self.conn.execute(COUNT_EVENTS, (sid,)).fetchone()["n"],
+                "tasks": len(self.tasks_for(sid)),
+                "jira_keys": [r["jira_key"] for r in self.conn.execute(SESSION_TICKETS, (sid,)).fetchall()]}
+
+    def delete_session_rows(self, sid: int) -> dict:
+        """Every row of the session in every table, in one transaction. Returns {table: rows removed}."""
+        removed = {}
+        with self.tx() as c:
+            for table, stmt in DELETE_STATEMENTS:
+                removed[table] = c.execute(stmt, (sid,)).rowcount
+        return removed

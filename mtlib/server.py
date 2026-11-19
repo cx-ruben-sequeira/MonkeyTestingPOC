@@ -6,6 +6,8 @@ is served only from inside runs/, with Range support so the video player can see
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import mimetypes
@@ -13,6 +15,7 @@ import os
 import re
 import threading
 import time
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -20,7 +23,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from . import jira, sessions
 from .agents.reporter import build_markdown
 from .config import ROOT, Config
-from .store import Store
+from .store import SESSION_ACTIVE, Store
 
 log = logging.getLogger("mt.server")
 WEB = ROOT / "web" / "index.html"
@@ -47,18 +50,74 @@ class App:
 
     def latest_shot(self, task: dict) -> str | None:
         base = os.path.normpath(os.path.abspath(os.fspath(self.cfg.runs_dir)))
-        d = os.path.normpath(os.path.join(base, f"s{int(task['session_id'])}", f"t{int(task['id'])}", "browser"))
-        if not d.startswith(base + os.sep) or not os.path.isdir(d):
+        tdir = os.path.normpath(os.path.join(base, f"s{int(task['session_id'])}", f"t{int(task['id'])}"))
+        if not tdir.startswith(base + os.sep) or not os.path.isdir(tdir):
             return None
         best, best_t = None, 0.0
-        for root, _dirs, files in os.walk(d):
-            for f in files:
-                if f.lower().endswith(IMAGE_EXT):
-                    p = os.path.join(root, f)
-                    t = os.path.getmtime(p)
-                    if t > best_t:
-                        best, best_t = p, t
+        for sub in ("browser", "shots"):
+            for root, _dirs, files in os.walk(os.path.join(tdir, sub)):
+                for f in files:
+                    if f.lower().endswith(IMAGE_EXT) and ".tmp." not in f:
+                        p = os.path.join(root, f)
+                        t = os.path.getmtime(p)
+                        if t > best_t:
+                            best, best_t = p, t
         return self.media_url(best)
+
+    def action_shots(self, sid: int) -> list[dict]:
+        """Every per-action screenshot of a session (runs/s<sid>/t<tid>/shots/*.png), oldest first."""
+        base = os.path.normpath(os.path.abspath(os.fspath(self.cfg.runs_dir)))
+        sdir = os.path.normpath(os.path.join(base, f"s{int(sid)}"))
+        if not sdir.startswith(base + os.sep) or not os.path.isdir(sdir):
+            return []
+        kinds = {int(t["id"]): t["kind"] for t in self.store.tasks_for(sid)}
+        out = []
+        for tname in os.listdir(sdir):
+            m = re.match(r"^t(\d+)$", tname)
+            shots = os.path.join(sdir, tname, "shots")
+            if not m or not os.path.isdir(shots):
+                continue
+            tid = int(m.group(1))
+            for f in os.listdir(shots):
+                fm = re.match(r"^(\d{19})-([a-z_]{0,30})\.png$", f)
+                if not fm:
+                    continue
+                info = {}
+                meta = os.path.join(shots, f[:-4] + ".json")
+                if os.path.isfile(meta):
+                    try:
+                        with open(meta, "r", encoding="utf-8") as fh:
+                            info = json.load(fh)
+                    except ValueError:
+                        info = {}
+                out.append({"ns": int(fm.group(1)), "task": tid, "kind": kinds.get(tid, "task"),
+                            "action": fm.group(2), "target": str(info.get("target") or ""),
+                            "path": os.path.join(shots, f)})
+        return sorted(out, key=lambda x: x["ns"])
+
+    def shots_zip(self, sid: int) -> bytes:
+        """All per-action screenshots of a closed session as one zip, numbered in the order they were taken."""
+        s = self.store.get_session(sid)
+        if not s:
+            raise KeyError("no such session")
+        if s["status"] in SESSION_ACTIVE:
+            raise sessions.FormError("the session is still running: the zip is available once it ends")
+        shots = self.action_shots(sid)
+        if not shots:
+            raise KeyError("this session has no screenshots")
+        buf, index = io.BytesIO(), io.StringIO()
+        rows = csv.writer(index)
+        rows.writerow(["#", "time", "task", "role", "action", "target", "file"])
+        folder = f"session-{int(sid)}-screenshots"
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:  # PNGs are already compressed
+            for i, x in enumerate(shots, 1):
+                name = f"{i:04d}_t{x['task']}-{x['kind']}_{x['action'] or 'action'}.png"
+                when = time.localtime(x["ns"] / 1e9)
+                z.write(x["path"], f"{folder}/{name}")
+                rows.writerow([i, time.strftime("%Y-%m-%d %H:%M:%S", when), x["task"], x["kind"], x["action"],
+                               x["target"], name])
+            z.writestr(f"{folder}/index.csv", index.getvalue())
+        return buf.getvalue()
 
     def suspect_view(self, s: dict) -> dict:
         out = dict(s)
@@ -76,7 +135,7 @@ class App:
             c = st.session_counts(int(s["id"]))
             rows.append({k: s[k] for k in ("id", "name", "url", "mode", "status", "phase", "duration_min",
                                            "max_actions", "actions_used", "repeat_count", "created_at",
-                                           "started_at", "deadline", "finished_at", "cost_usd", "summary")}
+                                           "started_at", "deadline", "finished_at", "cost_usd", "summary", "delete_state")}
                         | {"bugs": c.get("confirmed", 0), "suspects": sum(v for k, v in c.items()
                                                                           if not k.startswith("pages")),
                            "pages_total": c.get("pages_total", 0), "pages_visited": c.get("pages_visited", 0)})
@@ -108,7 +167,8 @@ class App:
                                              "current_action")} for t in st.tasks_for(sid)],
                 "suspects": [self.suspect_view(x) for x in st.suspects(sid)],
                 "events": st.events(sid, 200), "pages": st.pages(sid), "edges": st.edges(sid),
-                "has_report": bool(s.get("report_path"))}
+                "has_report": bool(s.get("report_path")),
+                "shot_count": len(self.action_shots(sid)) if s.get("shots_every_action") else 0}
 
     def bugs(self) -> list[dict]:
         out = []
@@ -140,6 +200,29 @@ class App:
             raise sessions.FormError("max_workers must be 1-10")
         self.store.set_setting("max_workers", str(n))
         return {"max_workers": n}
+
+    def delete_session(self, sid: int) -> dict:
+        from . import deletion
+        return deletion.request(self.cfg, self.store, sid)
+
+    def delete_many(self, ids) -> dict:
+        from . import deletion
+        if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(i, int) and i > 0 for i in ids):
+            raise sessions.FormError("ids must be a list of session numbers")
+        results = []
+        for sid in dict.fromkeys(ids):
+            try:
+                results.append(deletion.request(self.cfg, self.store, sid))
+            except KeyError:
+                results.append({"id": sid, "state": "missing", "deleted": False})
+        return {"results": results, "deleted": sum(1 for r in results if r.get("deleted"))}
+
+    def delete_preview(self, sid: int) -> dict:
+        from . import deletion
+        out = deletion.preview(self.cfg, self.store, sid)
+        if out is None:
+            raise KeyError("no such session")
+        return out
 
     def cancel(self, sid: int) -> dict:
         s = self.store.get_session(sid)
@@ -230,9 +313,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, md.encode(), "text/markdown; charset=utf-8",
                                   {"Content-Disposition": f"attachment; filename=monkeytesting-session-{m.group(1)}.md"}
                                   if q.get("download") else None)
+            m = re.match(r"^/api/sessions/(\d+)/delete-preview$", path)
+            if m:
+                return self._json(self.app.delete_preview(int(m.group(1))))
+            m = re.match(r"^/api/sessions/(\d+)/screenshots\.zip$", path)
+            if m:
+                sid = int(m.group(1))
+                return self._send(200, self.app.shots_zip(sid), "application/zip",
+                                  {"Content-Disposition": f"attachment; filename=monkeytesting-session-{sid}-screenshots.zip"})
             if path.startswith("/media/"):
                 return self._media(unquote(path[len("/media/"):]))
             return self._err(404, "not found")
+        except sessions.FormError as e:
+            return self._err(409, str(e))
+        except KeyError as e:
+            return self._err(404, str(e).strip("'"))
         except Exception as e:
             log.exception("GET %s", path)
             return self._err(500, str(e))
@@ -268,14 +363,39 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, body, MEDIA_TYPES[ext], extra)
 
     # ------------------------------------------------------------ POST
-    def do_POST(self):
+    def _write_allowed(self) -> bool:
+        """Every write (POST, DELETE) needs the dashboard's Host, the X-MT header and, when sent, its Origin."""
         if not self._host_ok():
-            return self._err(403, "bad host")
+            self._err(403, "bad host")
+            return False
         origin = self.headers.get("Origin")
         port = self.app.cfg.port
         if self.headers.get("X-MT") != "1" or (origin and origin not in (
                 f"http://127.0.0.1:{port}", f"http://localhost:{port}", f"http://[::1]:{port}")):
-            return self._err(403, "forbidden")
+            self._err(403, "forbidden")
+            return False
+        return True
+
+    def do_DELETE(self):
+        if not self._write_allowed():
+            return
+        path = urlsplit(self.path).path
+        m = re.match(r"^/api/sessions/(\d+)$", path)
+        if not m:
+            return self._err(404, "not found")
+        try:
+            return self._json(self.app.delete_session(int(m.group(1))))
+        except KeyError as e:
+            return self._err(404, str(e).strip("'"))
+        except ValueError as e:
+            return self._err(400, str(e))
+        except Exception as e:
+            log.exception("DELETE %s", path)
+            return self._err(500, str(e))
+
+    def do_POST(self):
+        if not self._write_allowed():
+            return
         length = int(self.headers.get("Content-Length") or 0)
         if length > 1_000_000:
             return self._err(413, "too large")
@@ -295,6 +415,8 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/sessions/(\d+)/cancel$", path)
             if m:
                 return self._json(app.cancel(int(m.group(1))))
+            if path == "/api/sessions/delete":   # bulk delete: {"ids": [1, 2, 3]}
+                return self._json(app.delete_many(body.get("ids")))
             m = re.match(r"^/api/bugs/(\d+)/jira$", path)
             if m:
                 return self._json(app.open_in_jira(int(m.group(1))))
