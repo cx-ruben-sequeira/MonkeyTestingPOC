@@ -6,6 +6,7 @@ N runs failed, and all failures are the same expect() assertion.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -106,8 +107,15 @@ def collect_results(report: dict) -> list[dict]:
                 for r in test.get("results") or []:
                     err = r.get("error") or {}
                     msg = err.get("message") or "\n".join(e.get("message", "") for e in r.get("errors") or [])
+                    final_state = {}
+                    for a in r.get("attachments") or []:
+                        if a.get("name") == "mt-final-state" and a.get("body"):
+                            try:
+                                final_state = json.loads(base64.b64decode(a["body"]).decode("utf-8"))
+                            except (ValueError, TypeError):
+                                final_state = {}
                     out.append({"status": r.get("status"), "message": ANSI_RE.sub("", msg or "")[:2000],
-                                "duration_ms": r.get("duration"),
+                                "duration_ms": r.get("duration"), "final_state": final_state,
                                 "attachments": [{"name": a.get("name"), "path": a.get("path"),
                                                  "type": a.get("contentType")}
                                                 for a in r.get("attachments") or [] if a.get("path")]})
@@ -119,11 +127,123 @@ def collect_results(report: dict) -> list[dict]:
     return out
 
 
-def decide(results: list[dict], n: int) -> dict:
-    """Applies the N-of-N rule to parsed results."""
+MT_TS = """// Written by MonkeyTesting next to every reproduction. repro.spec.ts imports `test` and `expect` from here.
+// - An automatic fixture records where each run really ended (URL, login page or not), so a run that never
+//   logged in or never reached the bug can't count as reproducing it.
+// - mt.reached / mt.ready are checkpoints: they prove the bug's page and content loaded before the bug is
+//   asserted. A failure there means "never got to the bug", not "bug confirmed".
+// - mt.precondition states the data or settings the bug depends on (e.g. "a custom state exists").
+import { test as base, expect, Page, Locator } from '@playwright/test';
+
+const AUTH = new RegExp(__AUTH_RE__, 'i');
+export { expect };
+
+export const test = base.extend<{ mtFinalState: void }>({
+  mtFinalState: [async ({ page }, use, testInfo) => {
+    await use();
+    let url = '';
+    try { url = page.url(); } catch { url = ''; }
+    let path = '';
+    try { path = new URL(url).pathname; } catch { path = ''; }
+    let passwordField = false;
+    try { passwordField = await page.locator('input[type="password"]').first().isVisible(); } catch { passwordField = false; }
+    await testInfo.attach('mt-final-state', {
+      body: JSON.stringify({ url, path, onLoginPage: AUTH.test(path) || passwordField }),
+      contentType: 'application/json',
+    });
+  }, { auto: true }],
+});
+
+export const mt = {
+  /** The browser is on the bug's page (and not on a login page). */
+  async reached(page: Page, url: RegExp | string, what = 'the page') {
+    try {
+      await expect(page).toHaveURL(url);
+    } catch (e) {
+      throw new Error(`MT-SETUP: never reached ${what} (ended on ${page.url()})`);
+    }
+    let path = '';
+    try { path = new URL(page.url()).pathname; } catch { path = ''; }
+    if (AUTH.test(path)) throw new Error(`MT-SETUP: still on a login page (${page.url()})`);
+  },
+  /** The content the bug is about has loaded (a list, a dropdown, a form...). */
+  async ready(locator: Locator, what = 'the content') {
+    try {
+      await expect(locator.first()).toBeVisible();
+    } catch (e) {
+      throw new Error(`MT-SETUP: ${what} never appeared`);
+    }
+  },
+  /** Something the bug depends on must be true first (e.g. the data or setting exists). */
+  precondition(ok: boolean, what: string) {
+    if (!ok) throw new Error(`MT-PRECONDITION: ${what}`);
+  },
+};
+"""
+CHECKPOINT_RE = re.compile(r"\bmt\.(reached|ready)\s*\(")
+IMPORT_RE = re.compile(r"""from\s+['"]@playwright/test['"]""")
+
+
+def write_helper(work_dir) -> Path:
+    """mt.ts next to the spec (always rewritten, so a reproducer can't weaken it)."""
+    from .scope import AUTH_PATH_RE
+    base = _dir(work_dir)
+    path = os.path.normpath(os.path.join(base, "mt.ts"))
+    if os.path.dirname(path) != base:
+        raise ValueError("bad helper path")
+    text = MT_TS.replace("__AUTH_RE__", json.dumps(AUTH_PATH_RE.pattern))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return Path(path)
+
+
+def use_helper(spec_path) -> str:
+    """Makes the spec import test/expect from ./mt (so its runs are checked), and returns its text."""
+    full = os.path.normpath(os.path.abspath(os.fspath(spec_path)))
+    if not full.endswith("repro.spec.ts") or not os.path.isfile(full):
+        return ""
+    with open(full, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    fixed = IMPORT_RE.sub("from './mt'", text)
+    if fixed != text:
+        with open(full, "w", encoding="utf-8") as fh:
+            fh.write(fixed)
+    return fixed
+SETUP_RE = re.compile(r"MT-(SETUP|PRECONDITION):\s*([^\n]{0,240})")
+
+
+def invalid_reason(r: dict) -> str | None:
+    """Why a failed run doesn't count as reproducing the bug: it failed before reaching it (a checkpoint or a
+    precondition failed) or it ended on a login page. None when the failure is a real one."""
+    if r["status"] not in ("failed", "timedOut"):
+        return None
+    m = SETUP_RE.search(r.get("message") or "")
+    if m:
+        kind = "a precondition isn't met" if m.group(1) == "PRECONDITION" else "it never reached the bug"
+        return f"{kind}: {m.group(2).strip()}"
+    fs = r.get("final_state") or {}
+    if fs.get("onLoginPage"):
+        return f"it ended on a login page ({fs.get('url') or fs.get('path')}): the test never logged in"
+    return None
+
+
+def decide(results: list[dict], n: int, spec_text: str | None = None) -> dict:
+    """Applies the N-of-N rule to parsed results. A run only counts as reproducing the bug when it got past
+    the spec's checkpoints (mt.reached / mt.ready) and didn't end on a login page; a spec without any
+    checkpoint can't confirm a bug, because nothing proves the page loaded."""
     failed = [r for r in results if r["status"] in ("failed", "timedOut")]
     sigs = {signature(r["message"]) for r in failed}
     total = len(results)
+    invalid = [(r, invalid_reason(r)) for r in failed]
+    invalid = [(r, why) for r, why in invalid if why]
+    if total >= n and invalid:
+        return {"verdict": "not_confirmed", "invalid": True, "total": total, "failed": len(failed),
+                "reason": f"not a bug: {len(invalid)}/{total} runs failed before reaching it, because {invalid[0][1]}",
+                "signature": None}
+    if total >= n and spec_text is not None and not CHECKPOINT_RE.search(spec_text) and failed:
+        return {"verdict": "not_confirmed", "invalid": True, "total": total, "failed": len(failed),
+                "reason": "the test never proves the page loaded (no mt.reached / mt.ready checkpoint before the "
+                          "assertion), so its failures can't confirm a bug", "signature": None}
     if total < n:
         verdict, reason = "error", f"only {total} of {n} runs reported"
     elif len(failed) == total and len(sigs) == 1 and all(is_assertion(r["message"]) for r in failed):
@@ -152,6 +272,8 @@ async def run_repeats(cfg: Config, work_dir, repeats: int, env_extra: dict | Non
     results_dir = os.path.normpath(os.path.join(base, "test-results"))
     if os.path.dirname(results_dir) == base and os.path.isdir(results_dir):
         shutil.rmtree(results_dir)
+    write_helper(base)
+    spec_text = use_helper(spec)
     n = max(1, int(repeats))
     budget = float(timeout_s or cfg.repro_timeout_s)
     loop = asyncio.get_running_loop()
@@ -168,7 +290,7 @@ async def run_repeats(cfg: Config, work_dir, repeats: int, env_extra: dict | Non
         first_error = first_error or error
         if on_progress:
             on_progress(i, sum(1 for r in results if r["status"] in ("failed", "timedOut")), n)
-    verdict = decide(results, n)
+    verdict = decide(results, n, spec_text)
     if not results and first_error:
         verdict["reason"] = first_error
     verdict["runs"] = [{"i": i + 1, "status": r["status"], "message": r["message"][:600],

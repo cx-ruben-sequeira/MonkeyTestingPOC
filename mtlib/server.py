@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import jira, sessions
+from . import jira, jira_settings, sessions
 from .agents.reporter import build_markdown
 from .config import ROOT, Config
 from .store import SESSION_ACTIVE, Store
@@ -149,7 +149,7 @@ class App:
         queued = sum(1 for s in all_sessions if s["status"] in ("running", "reporting")
                      for t in st.tasks_with_status(int(s["id"]), "queued"))
         out = {"now": time.time(), "max_workers": int(st.get_setting("max_workers", str(self.cfg.max_workers))),
-               "jira_ready": self.cfg.jira_ready, "stats": st.stats(), "usage": st.usage_total(),
+               "jira_ready": self.cfg.jira_ready, "jira_read_ready": self.cfg.jira_read_ready, "stats": st.stats(), "usage": st.usage_total(),
                "sessions": rows, "workers": workers, "queued": queued}
         if sid:
             out["selected"] = self.session_detail(sid)
@@ -200,6 +200,12 @@ class App:
             raise sessions.FormError("max_workers must be 1-10")
         self.store.set_setting("max_workers", str(n))
         return {"max_workers": n}
+
+    def jira_test(self) -> dict:
+        if not self.cfg.jira_read_ready:
+            raise sessions.FormError("fill in the Jira URL, email and API token first")
+        me = jira.myself(self.cfg)
+        return {"ok": True, "name": me["name"], "email": me["email"]}
 
     def delete_session(self, sid: int) -> dict:
         from . import deletion
@@ -305,6 +311,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(self.app.state(sid))
             if path == "/api/bugs":
                 return self._json(self.app.bugs())
+            if path == "/api/jira/settings":
+                return self._json(jira_settings.view(self.app.cfg))
             m = re.match(r"^/api/report/(\d+)\.md$", path)
             if m:
                 md = self.app.report_md(int(m.group(1)))
@@ -412,6 +420,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(sessions.create(app.cfg, app.store, body))
             if path == "/api/settings":
                 return self._json(app.set_workers(body))
+            if path == "/api/jira/settings":
+                return self._json(jira_settings.save(app.cfg, app.store, body))
+            if path == "/api/jira/test":
+                return self._json(app.jira_test())
             m = re.match(r"^/api/sessions/(\d+)/cancel$", path)
             if m:
                 return self._json(app.cancel(int(m.group(1))))
@@ -421,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 return self._json(app.open_in_jira(int(m.group(1))))
             return self._err(404, "not found")
-        except (sessions.FormError, jira.JiraError) as e:
+        except (sessions.FormError, jira.JiraError, jira_settings.SettingsError) as e:
             return self._err(400, str(e))
         except KeyError as e:
             return self._err(404, str(e).strip("'"))
@@ -431,6 +443,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def make_server(cfg: Config, store: Store, port: int | None = None) -> ThreadingHTTPServer:
+    jira_settings.apply(cfg, store)   # the Jira connection saved from the dashboard
     app = App(cfg, store)
     handler = type("BoundHandler", (Handler,), {"app": app})
     srv = ThreadingHTTPServer((cfg.host, cfg.port if port is None else port), handler)

@@ -35,6 +35,10 @@ class Tester(Agent):
         url = str(data.get("url") or "")
         if url and not self.in_scope(url):
             return None
+        if url and not self.scope.allows(self.absolute(url)):   # the user's instructions limit where to test
+            self.store.add_event(self.sid, self.tid, "tester", "info",
+                                 f"suspect outside the focus area dropped: {str(data.get('title') or '')[:100]} @ {url}")
+            return None
         data = dict(data, url=self.absolute(url) if url else self.srow["url"])
         sus = self.store.add_suspect(self.sid, self.tid, data)
         title = str(data.get("title") or "")[:120]

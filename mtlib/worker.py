@@ -24,7 +24,7 @@ from . import proc as procs
 
 log = logging.getLogger("mt.worker")
 
-MARKERS = ("PAGE", "EDGE", "CHARTER", "SUSPECT", "ACTION", "SPEC", "DUPLICATE", "NOTE")
+MARKERS = ("PAGE", "EDGE", "CHARTER", "SUSPECT", "ACTION", "SPEC", "DUPLICATE", "NOTE", "RULES", "LOGGED_IN")
 MARKER_RE = re.compile(r"^\s*[`*]*\s*(" + "|".join(MARKERS) + r"):\s*(.*?)\s*[`*]*\s*$")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 PAGE_URL_RE = re.compile(r"Page URL:\s*(\S+)")

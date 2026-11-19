@@ -156,7 +156,7 @@ table.t td.sel, table.t th.sel { width: 26px; padding-right: 0; }
 <header class="top">
   <div class="brand"><b>🐒 MonkeyTesting</b><span class="muted small">autonomous exploratory QA</span></div>
   <div class="actions">
-    <span id="jiraPill" class="pill">Jira</span>
+    <button id="jiraPill" class="pill" type="button" title="Jira connection" style="cursor:pointer;border:1px solid var(--border)">Jira</button>
     <span class="stepper" title="Parallel Claude workers across all sessions">Workers
       <button id="wDown" aria-label="fewer workers">−</button><b id="wNum">–</b><button id="wUp" aria-label="more workers">+</button></span>
     <span id="busy" class="pill"></span>
@@ -211,7 +211,8 @@ table.t td.sel, table.t th.sel { width: 26px; padding-right: 0; }
             <label class="f">Password<input name="password" type="password" autocomplete="new-password"><span class="hint">kept in a local 0600 file, masked in logs, never sent to Claude</span></label>
             <label class="check hide" id="reuseRow" style="grid-column:1/-1"><input type="checkbox" name="reuse_login" checked> <span id="reuseText"></span></label>
             <label class="f" style="grid-column:1/-1">Extra allowed origins<input name="extra_origins" placeholder="https://auth.staging.myapp.com (space separated)"></label>
-            <label class="f" style="grid-column:1/-1">Instructions and constraints<textarea name="instructions" rows="3" placeholder="e.g. Focus on checkout. Don't touch /admin. Use test card 4242…"></textarea></label>
+            <label class="f" style="grid-column:1/-1">Instructions and constraints<textarea name="instructions" rows="3" placeholder="e.g. Focus on checkout. Don't touch /admin. Use test card 4242…"></textarea><span class="hint">Followed strictly. Jira tickets you name (AST-1234 or a Jira link) are read and become part of the instructions. Needs the Jira connection (top right).</span></label>
+            <label class="check" style="grid-column:1/-1"><input type="checkbox" name="ticket_comments"> <span>Also read the tickets' comments (they often hold test notes, but can be outdated)</span></label>
           </div></details>
         <label class="check full"><input type="checkbox" name="shots_every_action"> <span>Screenshot every action. Saves a screenshot at the viewport's normal resolution after each browser action. When the session ends you can download them all as a zip.</span></label>
         <label class="check full"><input type="checkbox" name="allow_destructive"> <span>Allow destructive actions (delete, pay, send, transfer…). Off by default: a guard blocks them.</span></label>
@@ -233,6 +234,7 @@ table.t td.sel, table.t th.sel { width: 26px; padding-right: 0; }
           <div class="wmeta" id="lvMeta"></div></div>
         <div class="card"><div class="metrics" id="lvMetrics" style="margin:0"></div></div>
       </div>
+      <div class="card hide" id="lvRules"></div>
       <div class="section-head"><h2>Workers</h2><span class="muted small" id="lvQueue"></span></div>
       <div class="workers" id="lvWorkers"></div>
       <div class="two">
@@ -305,7 +307,7 @@ const statusPill = s => { const c = {running: 'accent', reporting: 'accent', que
 const deletePill = d => !d ? '' : d === 'incomplete' ? ' <span class="pill bad" title="Some files could not be removed. Delete again to retry.">delete incomplete</span>'
   : ` <span class="pill warn">${d === 'requested' ? 'cancelling, then deleting' : 'deleting'}</span>`;
 const sevPill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
-const kindLabel = {explore: 'Explorer', test: 'Tester', repro: 'Reproducer', report: 'Reporter'};
+const kindLabel = {rules: 'Interpreter', explore: 'Explorer', test: 'Tester', repro: 'Reproducer', report: 'Reporter'};
 
 // ---------------------------------------------------------------- tabs
 function setTab(t) {
@@ -350,8 +352,9 @@ function render() {
   const st = S.state; if (!st) return;
   $('#wNum').textContent = st.max_workers;
   $('#busy').textContent = `${st.workers.length} running · ${st.queued} queued`;
-  const jp = $('#jiraPill'); jp.textContent = st.jira_ready ? 'Jira ready' : 'Jira not set up'; jp.className = 'pill ' + (st.jira_ready ? 'ok' : '');
-  jp.title = st.jira_ready ? '' : 'Set [jira] in config.toml and JIRA_API_TOKEN in the environment';
+  const jp = $('#jiraPill'); jp.textContent = st.jira_ready ? 'Jira ready' : st.jira_read_ready ? 'Jira: reading tickets' : 'Jira not set up';
+  jp.className = 'pill ' + (st.jira_ready ? 'ok' : st.jira_read_ready ? 'accent' : '');
+  jp.title = 'Jira connection: click to set it up or change it';
   $('#bugCount').textContent = st.stats.bugs;
   const opts = st.sessions.map(s => `<option value="${s.id}" ${s.id === S.sel ? 'selected' : ''}>#${s.id} ${esc(s.name || s.url)} — ${esc(s.status)}</option>`).join('');
   ['#liveSel', '#mapSel', '#repSel'].forEach(sel => { if ($(sel).innerHTML !== opts) $(sel).innerHTML = opts; });
@@ -401,7 +404,7 @@ function checkHost() {
 $('#newForm').addEventListener('submit', async e => {
   e.preventDefault();
   const f = new FormData(e.target), body = Object.fromEntries(f.entries());
-  body.mode = S.mode; body.allow_destructive = f.has('allow_destructive'); body.shots_every_action = f.has('shots_every_action'); body.confirm_non_test = f.has('confirm_non_test');
+  body.mode = S.mode; body.allow_destructive = f.has('allow_destructive'); body.shots_every_action = f.has('shots_every_action'); body.ticket_comments = f.has('ticket_comments'); body.confirm_non_test = f.has('confirm_non_test');
   delete body.reuse_login;
   if (S.repeat) { body.repeat_of = S.repeat.id; if (S.repeat.has_auth && f.has('reuse_login') && !body.username && !body.password) body.reuse_login_from = S.repeat.id; }
   $('#startBtn').disabled = true; $('#newMsg').textContent = 'Starting…';
@@ -432,6 +435,7 @@ async function repeatSession(id) {
   set('extra_origins', (s.allowed_origins || []).filter(o => o && o !== loginOrigin).join(' '));
   set('instructions', s.instructions);
   f.elements.shots_every_action.checked = !!s.shots_every_action;
+  f.elements.ticket_comments.checked = !!s.ticket_comments;
   f.elements.allow_destructive.checked = !!s.allow_destructive;
   f.elements.confirm_non_test.checked = false;   // always re-confirmed by hand
   ($(`#modeSeg button[data-mode="${s.mode}"]`) || $('#modeSeg button[data-mode="hybrid"]')).click();
@@ -511,6 +515,67 @@ $('#bulkDel').addEventListener('click', () => { if (S.picked && S.picked.size) a
 $('#bulkClear').addEventListener('click', () => { S.picked = new Set(); $$('#dashSessions input[type=checkbox]').forEach(c => { c.checked = false; }); renderBulk(); });
 $('#deleteBtn').addEventListener('click', () => { if (S.sel) askDelete([S.sel]); });
 
+// ---------------------------------------------------------------- Jira connection
+$('#jiraPill').addEventListener('click', openJira);
+async function openJira() {
+  let v;
+  try { v = await api('/api/jira/settings'); } catch (e) { showErr(e.message); return; }
+  $('#modal').innerHTML = `<h3 id="modalTitle">Jira connection</h3>
+    <p class="small muted" style="margin-top:0">Used to read the tickets you name in a session's instructions and, with a project key, to create bugs. Workers never get the token.</p>
+    <form id="jiraForm" class="grid" autocomplete="off" style="display:grid;gap:10px">
+      <label class="f">Jira URL<input name="base_url" type="url" placeholder="https://yourcompany.atlassian.net" value="${esc(v.base_url)}"></label>
+      <label class="f">Atlassian account email<input name="email" type="email" autocomplete="off" value="${esc(v.email)}"></label>
+      <label class="f">API token<input name="token" type="password" autocomplete="new-password" placeholder="${v.token_saved ? (v.token_from === 'environment' ? 'set from JIRA_API_TOKEN; type to override' : 'saved; leave empty to keep it') : 'paste your API token'}">
+        <span class="hint">Create one at id.atlassian.com → Security → API tokens. It is kept in memory only while the server runs (never written to disk, never shown again); re-enter it after a restart, or put JIRA_API_TOKEN in .env to keep it.</span></label>
+      <label class="f">Project key for new bugs (optional)<input name="project_key" placeholder="QA" value="${esc(v.project_key)}"></label>
+      <div class="small" id="jiraStatus">${v.ready ? '<span class="pill ok">ready: reads tickets and creates bugs</span>' : v.read_ready ? '<span class="pill accent">reads tickets (add a project key to create bugs)</span>' : '<span class="pill">not set up</span>'}</div>
+      <div class="actions" style="justify-content:space-between">
+        <span>${v.token_from === 'dashboard' ? '<button type="button" class="small danger" id="jiraForget">Forget token</button>' : ''}</span>
+        <span class="actions"><button type="button" class="small" data-close>Close</button><button type="button" class="small" id="jiraTest">Test connection</button><button type="submit" class="primary small">Save</button></span>
+      </div>
+    </form>`;
+  $('#modalBack').classList.remove('hide');
+  const form = $('#jiraForm'), status = $('#jiraStatus');
+  const body = extra => ({base_url: form.base_url.value, email: form.email.value, project_key: form.project_key.value, token: form.token.value, ...extra});
+  const save = async extra => { const out = await api('/api/jira/settings', body(extra)); form.token.value = ''; poll(); return out; };
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    try { const out = await save(); status.innerHTML = out.ready ? '<span class="pill ok">saved: reads tickets and creates bugs</span>' : out.read_ready ? '<span class="pill accent">saved: reads tickets</span>' : '<span class="pill warn">saved, but URL, email and token are all needed</span>'; }
+    catch (err) { status.innerHTML = `<span class="pill bad">${esc(err.message)}</span>`; }
+  });
+  $('#jiraTest').addEventListener('click', async () => {
+    status.textContent = 'Testing…';
+    try { await save(); const me = await api('/api/jira/test', {}); status.innerHTML = `<span class="pill ok">connected as ${esc(me.name || me.email)}</span>`; }
+    catch (err) { status.innerHTML = `<span class="pill bad">${esc(err.message)}</span>`; }
+  });
+  const forget = $('#jiraForget');
+  if (forget) forget.addEventListener('click', async () => { try { await save({clear_token: true, token: ''}); closeModal(); openJira(); } catch (err) { status.innerHTML = `<span class="pill bad">${esc(err.message)}</span>`; } });
+  form.base_url.focus();
+}
+
+// ---------------------------------------------------------------- Instructions, as understood
+const SCOPE_LABEL = {page: 'this page only', below: 'this page and everything under it', app: 'the whole app'};
+function renderRules(s) {
+  const box = $('#lvRules'), text = (s.instructions || '').trim();
+  box.classList.toggle('hide', !text);
+  if (!text) return;
+  const r = s.rules || {}, li = (label, items) => items && items.length ? `<div class="steprow" style="align-items:flex-start"><span>${label}</span><span style="text-align:right">${items.map(esc).join('<br>')}</span></div>` : '';
+  const pending = !r.source && ['queued', 'running'].includes(s.status);
+  const src = r.source === 'interpreter' ? '<span class="pill ok">understood by the interpreter</span>'
+    : r.source === 'parser' ? '<span class="pill warn" title="The interpreter run failed; these were read with simple rules">read by the fallback parser</span>' : '';
+  box.innerHTML = `<div class="section-head"><h2>Your instructions, as understood</h2>${pending ? '<span class="muted small">reading them before any browser starts…</span>' : src}</div>
+    <div class="small muted" style="white-space:pre-wrap;margin-bottom:8px">${esc(text)}</div>
+    ${(s.tickets || []).length ? `<div class="steprow" style="align-items:flex-start"><span>Jira tickets read</span><span style="text-align:right">${s.tickets.map(t => t.error
+      ? `<span class="pill bad" title="${esc(t.error)}">${esc(t.key)}: not read</span> <span class="small muted">${esc(t.error)}</span>`
+      : `<a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">${esc(t.key)}</a> ${esc(t.summary)} <span class="pill">${esc(t.status || '')}</span>`).join('<br>')}</span></div>` : ''}
+    ${r.summary ? `<div style="margin-bottom:6px">${esc(r.summary)}</div>` : ''}
+    ${li('Test only', (r.focus_urls || []).map(u => u + ' (' + (SCOPE_LABEL[r.scope] || r.scope) + ')'))}
+    ${li('Never visit', r.exclude_paths)}${li('Never click or type into', r.forbidden_actions)}
+    ${li('Must do', r.required)}${li('Also keep in mind', r.notes)}
+    ${r.source && !(r.focus_urls || []).length && !(r.exclude_paths || []).length && !(r.forbidden_actions || []).length ? '<div class="small muted">No page limits or blocked actions found: workers follow your text as written.</div>' : ''}
+    <div class="small muted" style="margin-top:6px">Enforced: the guard blocks navigation outside the focus area, excluded paths and blocked actions. Your full text also goes to every worker as binding instructions.</div>`;
+}
+
 // ---------------------------------------------------------------- Live monitor
 function runsBoxes(s) {
   const n = s.runs_total || 0, runs = s.runs || [];
@@ -542,6 +607,7 @@ function renderLive() {
   const db = $('#deleteBtn'); db.classList.toggle('hide', s.delete_state === 'requested' || s.delete_state === 'deleting');
   db.textContent = ACTIVE.includes(s.status) ? 'Cancel & delete' : s.delete_state === 'incomplete' ? 'Retry delete' : 'Delete session';
   renderShotDownload(d);
+  renderRules(s);
   const total = s.duration_min * 60, used = s.started_at ? Math.min(total, (s.finished_at || now) - s.started_at) : 0;
   $('#lvTime').textContent = s.started_at ? `${mins(used)} of ${s.duration_min} min` : 'not started';
   $('#lvTimeBar span').style.width = (100 * used / total) + '%';

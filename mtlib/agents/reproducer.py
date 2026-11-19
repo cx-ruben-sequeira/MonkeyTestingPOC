@@ -54,6 +54,7 @@ class Reproducer(Agent):
         repro.write_config(self.work_dir, self.srow["browser"] or self.cfg.browser,
                            self.srow["viewport"] or self.cfg.viewport,
                            self.srow.get("page_load_s") or repro.DEFAULT_PAGE_LOAD_S)
+        repro.write_helper(self.work_dir)   # mt.ts: checkpoints + where each run really ended
         s = self.suspect
         steps = "\n".join(f"{i}. {st}" for i, st in enumerate(s["steps"] or [], 1)) or "(not given)"
         self.store.update_suspect(s["id"], status="reproducing", runs_total=int(self.srow["repeat_count"]),

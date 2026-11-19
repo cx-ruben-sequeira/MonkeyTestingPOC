@@ -1,6 +1,7 @@
 """Jira Cloud REST v3: create an issue for a confirmed bug, then attach its video and screenshots.
 
-The API token comes from the JIRA_API_TOKEN environment variable only; it is never stored.
+The API token is entered in the dashboard (kept in memory only) or comes from JIRA_API_TOKEN; it is
+never stored in the database or logged. Tickets named in a session's instructions are read here, read-only.
 """
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import uuid
 from urllib import error, request
 from urllib.parse import urlsplit
@@ -83,8 +85,8 @@ SEVERITY_PRIORITY = {"critical": "Highest", "high": "High", "medium": "Medium", 
 
 def create_issue(cfg: Config, bug: dict, session: dict) -> dict:
     if not cfg.jira_ready:
-        raise JiraError("Jira isn't configured: set [jira] base_url, email, project_key in config.toml "
-                        "and the JIRA_API_TOKEN environment variable")
+        raise JiraError("Jira isn't set up: open the Jira connection panel in the dashboard (URL, email, "
+                        "project key and API token)")
     fields = {"project": {"key": cfg.jira_project_key}, "issuetype": {"name": cfg.jira_issue_type},
               "summary": f"[MonkeyTesting] {bug['title']}"[:250], "description": description(bug, session),
               "labels": [l.replace(" ", "-") for l in cfg.jira_labels]}
@@ -115,3 +117,114 @@ def attach(cfg: Config, key: str, paths: list[str], allowed_root: str) -> list[s
               {"Content-Type": f"multipart/form-data; boundary={boundary}", "X-Atlassian-Token": "no-check"})
         done.append(name)
     return done
+
+
+# ---------------------------------------------------------------- reading tickets (read-only)
+TICKET_KEY_RE = re.compile(r"(?<![A-Za-z0-9_-])([A-Z][A-Z0-9_]{1,19}-[1-9]\d{0,6})(?![A-Za-z0-9_-])")
+NOT_TICKETS = {"UTF", "ISO", "SHA", "TLS", "SSL", "HTTP", "CVE", "RFC", "AES", "MD", "GPT", "COVID", "WCAG", "IPV",
+               "X", "A", "B", "V"}
+MAX_TICKETS = 5
+TICKET_TEXT_CHARS = 6000
+EXTRA_FIELD_RE = re.compile(r"acceptance|criteria|steps|scenario|expected|test (notes|plan|cases)|how to test|"
+                            r"reproduc", re.I)
+
+
+def ticket_keys(text: str) -> list[str]:
+    """Jira keys named in free text: AST-1234, or links like .../browse/AST-1234 or ?selectedIssue=AST-1234."""
+    out = []
+    for key in TICKET_KEY_RE.findall(text or ""):
+        if key.split("-")[0] not in NOT_TICKETS and key not in out:
+            out.append(key)
+    return out[:MAX_TICKETS]
+
+
+def adf_to_text(node, depth: int = 0) -> str:
+    """Atlassian Document Format to plain text (paragraphs, lists, headings, code, tables, links)."""
+    if node is None or depth > 40:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return "".join(adf_to_text(n, depth + 1) for n in node)
+    if not isinstance(node, dict):
+        return ""
+    kind = node.get("type")
+    if kind == "text":
+        return str(node.get("text") or "")
+    if kind == "hardBreak":
+        return "\n"
+    if kind in ("mention", "emoji", "inlineCard"):
+        attrs = node.get("attrs") or {}
+        return str(attrs.get("text") or attrs.get("shortName") or attrs.get("url") or "")
+    inner = adf_to_text(node.get("content") or [], depth + 1)
+    if kind == "listItem":
+        return "- " + inner.strip().replace("\n", "\n  ") + "\n"
+    if kind in ("paragraph", "heading", "codeBlock", "blockquote", "tableRow", "panel", "rule"):
+        return inner.strip() + "\n"
+    if kind in ("tableCell", "tableHeader"):
+        return inner.strip() + " | "
+    return inner
+
+
+def _field_text(value) -> str:
+    if isinstance(value, dict) and value.get("type") == "doc":
+        return adf_to_text(value).strip()
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return ", ".join(str((v or {}).get("value") or (v or {}).get("name") or v) if isinstance(v, dict) else str(v)
+                         for v in value)
+    if isinstance(value, dict):
+        return str(value.get("value") or value.get("name") or "")
+    return ""
+
+
+def myself(cfg: Config) -> dict:
+    """Who the token belongs to (to test the connection)."""
+    out = _call(cfg, "GET", "/rest/api/3/myself", None, {})
+    return {"name": out.get("displayName") or "", "email": out.get("emailAddress") or ""}
+
+
+def get_issue(cfg: Config, key: str, comments: bool = False) -> dict:
+    """One ticket as plain text: summary, type, status, description, acceptance-criteria-like fields and,
+    when asked, the latest comments. Read-only."""
+    if not TICKET_KEY_RE.fullmatch(key or ""):
+        raise JiraError(f"not a Jira key: {key!r}")
+    data = _call(cfg, "GET", f"/rest/api/3/issue/{key}?expand=names&fields=*all", None, {})
+    fields, names = data.get("fields") or {}, data.get("names") or {}
+    parts = []
+    desc = _field_text(fields.get("description"))
+    if desc:
+        parts.append("Description:\n" + desc)
+    for fid, fname in names.items():
+        if fid.startswith("customfield_") and EXTRA_FIELD_RE.search(str(fname or "")):
+            text = _field_text(fields.get(fid))
+            if text:
+                parts.append(f"{fname}:\n{text}")
+    if comments:
+        items = ((fields.get("comment") or {}).get("comments") or [])[-10:]
+        lines = [f"- {((c.get('author') or {}).get('displayName') or 'someone')}: {adf_to_text(c.get('body')).strip()}"
+                 for c in items if c.get("body")]
+        if lines:
+            parts.append("Comments (latest last):\n" + "\n".join(lines))
+    text = "\n\n".join(parts)
+    if len(text) > TICKET_TEXT_CHARS:
+        text = text[:TICKET_TEXT_CHARS] + "\n[... cut: the ticket is longer]"
+    return {"key": key, "summary": str(fields.get("summary") or ""),
+            "type": str((fields.get("issuetype") or {}).get("name") or ""),
+            "status": str((fields.get("status") or {}).get("name") or ""),
+            "url": f"{_check_base(cfg)}/browse/{key}", "text": text}
+
+
+def read_tickets(cfg: Config, text: str, comments: bool = False) -> list[dict]:
+    """Every ticket named in the text; a ticket that can't be read comes back with an `error`."""
+    out = []
+    for key in ticket_keys(text):
+        if not cfg.jira_read_ready:
+            out.append({"key": key, "error": "Jira isn't connected: open the Jira connection panel in the dashboard"})
+            continue
+        try:
+            out.append(get_issue(cfg, key, comments))
+        except JiraError as e:
+            out.append({"key": key, "error": str(e)[:300]})
+    return out

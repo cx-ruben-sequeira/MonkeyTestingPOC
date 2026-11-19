@@ -22,17 +22,21 @@ class Explorer(Agent):
         elif name == "CHARTER" and isinstance(data, dict) and len(self.charters) < self.cfg.max_charters:
             area = str(data.get("area") or "").strip()[:120]
             if area and area.lower() not in {c["area"].lower() for c in self.charters}:
-                start = str(data.get("start_url") or self.srow["url"])
+                start = self.absolute(str(data.get("start_url") or self.scope.start_url))
+                if not self.scope.allows(start):   # charters stay inside the user's focus area
+                    self.store.add_event(self.sid, self.tid, "explorer", "info",
+                                         f"charter '{area}' started outside the focus area ({start}); moved to {self.scope.start_url}")
+                    start = self.scope.start_url
                 self.charters.append({
                     "area": area, "goal": str(data.get("goal") or "")[:800],
-                    "start_url": self.absolute(start) if self.in_scope(start) else self.srow["url"],
+                    "start_url": start,
                     "focus": [str(f)[:120] for f in (data.get("focus") or [])][:8]})
                 self.store.add_event(self.sid, self.tid, "explorer", "charter", f"charter: {area}")
 
     async def finish(self, result, stopped):
         if stopped in ("cancelled", "limit", "session_budget"):
             return {"result": f"stopped ({stopped}), {len(self.charters)} charters"}
-        self.store.upsert_page(self.sid, self.srow["url"], visited=True)
+        self.store.upsert_page(self.sid, self.scope.start_url, visited=True)
         queue_charters(self, self.charters)
         return {"result": f"{len(self.store.pages(self.sid))} pages, {len(self.charters)} charters"}
 
@@ -46,8 +50,11 @@ def queue_charters(agent: Agent, charters: list[dict]) -> None:
     if row["budget_hit_at"] or row["cancel_requested"]:
         return
     if not charters:
-        charters = [{"area": "Whole application", "goal": "Explore and test the main flows and forms.",
-                     "start_url": row["url"], "focus": ["forms", "navigation", "error handling"]}]
+        from ..scope import Scope
+        start = Scope.for_session(row).start_url
+        charters = [{"area": "Focus area" if start != row["url"] else "Whole application",
+                     "goal": "Explore and test the main flows and forms, following the user's instructions.",
+                     "start_url": start, "focus": ["forms", "navigation", "error handling"]}]
     remaining = max(0, int(row["max_actions"]) - int(row["actions_used"]))
     per = max(15, remaining // max(1, len(charters)))
     for c in charters:

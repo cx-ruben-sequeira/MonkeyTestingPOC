@@ -420,7 +420,7 @@ class TestServer(Base):
         self.store.update_suspect(bug, status="confirmed")
         code, out = self.req(f"/api/bugs/{bug}/jira", {})
         self.assertEqual(code, 400)
-        self.assertIn("isn't configured", out["error"])
+        self.assertIn("isn't set up", out["error"])
 
 
 # ---------------------------------------------------------------- real Playwright against the demo app
@@ -437,14 +437,17 @@ class TestRealRepro(Base):
         self.demo.wait()
         super().tearDown()
 
-    def spec(self, d: Path, body: str):
-        repro.write_config(d, "chromium", "1280x800")
-        write_under(self.tmp, d / "repro.spec.ts", "import { test, expect } from '@playwright/test';\n"
+    def spec(self, d: Path, body: str, imports: str = "import { test, expect, mt } from './mt';"):
+        repro.write_config(d, "chromium", "1280x800", 10)
+        repro.write_helper(d)
+        write_under(self.tmp, d / "repro.spec.ts", imports + "\n"
                                                    f"test('repro', async ({{ page }}) => {{\n{body}\n}});\n")
 
     def test_confirmed_with_video(self):
         d = self.tmp / "runs" / "s1" / "suspect-1"
         self.spec(d, "  await page.goto('http://localhost:8098/signup');\n"
+                     "  await mt.reached(page, /\\/signup/, 'the signup page');\n"
+                     "  await mt.ready(page.getByRole('button', { name: 'Create account' }), 'the signup form');\n"
                      "  await page.getByRole('button', { name: 'Create account' }).click();\n"
                      "  await expect(page.getByText('Name is required')).toBeVisible({ timeout: 2000 });")
         seen = []
@@ -453,6 +456,50 @@ class TestRealRepro(Base):
         self.assertEqual((out["failed"], out["total"]), (2, 2))
         self.assertTrue(out["video"] and Path(out["video"]).stat().st_size > 0)
         self.assertEqual(seen[-1], (2, 2, 2))
+
+    def assert_not_a_bug(self, body, why, imports=None):
+        d = self.tmp / "runs" / "s1" / f"suspect-{abs(hash(body)) % 10000}"
+        self.spec(d, body, *( [imports] if imports else []))
+        out = asyncio.run(repro.run_repeats(self.cfg, d, 2))
+        self.assertEqual(out["failed"], 2, out)                    # every run failed...
+        self.assertEqual(out["verdict"], "not_confirmed", out)    # ...but that doesn't make it a bug
+        self.assertIn(why, out["reason"])
+        return out
+
+    def test_never_reaching_the_page_is_not_a_bug(self):
+        self.assert_not_a_bug("  await page.goto('http://localhost:8098/signup');\n"
+                              "  await mt.reached(page, /\\/reports/, 'the reports page');\n"
+                              "  await expect(page.getByText('nothing')).toBeVisible({ timeout: 1000 });",
+                              "never reached the reports page")
+
+    def test_content_that_never_loads_is_not_a_bug(self):
+        self.assert_not_a_bug("  await page.goto('http://localhost:8098/signup');\n"
+                              "  await mt.reached(page, /\\/signup/);\n"
+                              "  await mt.ready(page.getByRole('listbox', { name: 'States' }), 'the state dropdown');\n"
+                              "  await expect(page.getByRole('option')).toHaveCount(8);",
+                              "the state dropdown never appeared")
+
+    def test_ending_on_a_login_page_is_not_a_bug(self):
+        # like the false 'custom states' bug: every step quietly skipped, the run ended on the login page
+        self.assert_not_a_bug("  await page.goto('http://localhost:8098/login-organization');\n"
+                              "  if (await page.getByRole('button', { name: 'State' }).isVisible().catch(() => false)) {\n"
+                              "    await page.getByRole('button', { name: 'State' }).click();\n  }\n"
+                              "  await mt.ready(page.locator('body'), 'the page');\n"
+                              "  expect(await page.getByRole('option').count()).toBeGreaterThan(5);",
+                              "ended on a login page")
+
+    def test_no_checkpoint_cannot_confirm(self):
+        self.assert_not_a_bug("  await page.goto('http://localhost:8098/signup');\n"
+                              "  await page.getByRole('button', { name: 'Create account' }).click();\n"
+                              "  await expect(page.getByText('Name is required')).toBeVisible({ timeout: 1000 });",
+                              "never proves the page loaded", imports="import { test, expect } from '@playwright/test';")
+
+    def test_unmet_precondition_is_not_a_bug(self):
+        self.assert_not_a_bug("  await page.goto('http://localhost:8098/signup');\n"
+                              "  await mt.reached(page, /\\/signup/);\n"
+                              "  mt.precondition(await page.getByText('Custom states').count() > 0, 'a custom state exists');\n"
+                              "  await expect(page.getByText('Custom states')).toBeVisible();",
+                              "a precondition isn't met")
 
     def test_passing_spec_not_confirmed(self):
         d = self.tmp / "runs" / "s1" / "suspect-2"
@@ -970,6 +1017,284 @@ class TestPageLoad(Base):
         self.assertIn("expect: { timeout: 30000 }", text)
         self.assertIn(f"timeout: {repro.test_timeout_s(30) * 1000},", text)
         self.assertIn("navigationTimeout: 120000", repro.write_config(d, "chromium", "1280x800").read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------- the user's instructions, followed strictly
+class TestInstructions(Base):
+    def test_fallback_parser(self):
+        from mtlib import rules
+        r = rules.parse_fallback("after you login make your tests under https://app.test/riskhub. "
+                                 "Don't go to /riskhub/admin or https://other.test/x", "https://app.test/",
+                                 ["https://app.test"])
+        self.assertEqual(r["focus_urls"], ["https://app.test/riskhub"])
+        self.assertEqual(r["scope"], "below")
+        self.assertEqual(r["exclude_paths"], ["/riskhub/admin"])
+        self.assertEqual(rules.parse_fallback("test only this page: /settings", "https://app.test/",
+                                              ["https://app.test"])["scope"], "page")
+        bad = rules.normalize({"focus_urls": ["https://evil.test/x"], "scope": "nonsense"}, "https://app.test/",
+                              ["https://app.test"])
+        self.assertEqual((bad["focus_urls"], bad["scope"]), ([], "app"))
+
+    def test_pipeline_stays_in_the_focus_area(self):
+        instr = f"After you login make your tests under {DEMO}/reports. Never click export. Use the name Ana."
+        sid = self.new_session(instructions=instr)
+        self.run_all()
+        s = self.store.get_session(sid)
+        tasks = self.store.tasks_for(sid)
+        self.assertEqual(tasks[0]["kind"], "rules")                      # the interpreter ran first
+        self.assertEqual(s["rules"]["source"], "interpreter")
+        self.assertEqual(s["rules"]["focus_urls"], [f"{DEMO}/reports"])
+        self.assertIn("export", s["rules"]["forbidden_actions"])
+        guard_rules = json.loads((self.cfg.runs_dir / f"s{sid}" / "guard.json").read_text(encoding="utf-8"))
+        self.assertEqual(guard_rules["scope"]["focus"], [f"{DEMO}/reports"])
+        self.assertEqual(guard_rules["forbidden"], ["export"])
+        for t in tasks:                                                   # every charter starts inside the focus
+            if t["kind"] == "test":
+                self.assertTrue(t["charter"]["start_url"].startswith(f"{DEMO}/reports"), t["charter"])
+        visited = [p["url"] for p in self.store.pages(sid) if p["visited"]]
+        self.assertTrue(visited)
+        self.assertTrue(all(u.startswith(f"{DEMO}/reports") for u in visited), visited)
+        titles = [x["title"] for x in self.store.suspects(sid)]
+        self.assertNotIn("Signup accepts an empty name", titles)          # found outside the focus: dropped
+        self.assertIn("Generate report returns 500", titles)
+        explore_dir = next(self.cfg.runs_dir.glob(f"s{sid}/t*/append.txt"))
+        system = explore_dir.read_text(encoding="utf-8")
+        self.assertIn("USER INSTRUCTIONS - BINDING", system)
+        self.assertIn(instr, system)
+        self.assertIn("MUST: use the name Ana", system)
+        self.assertIn(f"Focus ONLY on: {DEMO}/reports", system)
+
+    def test_interpreter_failure_falls_back(self):
+        os.environ["FAKE_CLAUDE_MODE"] = "rules_fail"
+        sid = self.new_session(instructions=f"Only test {DEMO}/reports please. Don't touch /admin.")
+        self.run_all()
+        r = self.store.get_session(sid)["rules"]
+        self.assertEqual(r["source"], "parser")
+        self.assertEqual(r["focus_urls"], [f"{DEMO}/reports"])
+        self.assertEqual(r["exclude_paths"], ["/admin"])
+
+    def test_landing_outside_sends_the_worker_back(self):
+        from mtlib import agents
+        from mtlib.dispatcher import session_dir
+        sid = self.new_session()
+        self.store.update_session(sid, rules={"focus_urls": [f"{DEMO}/reports"], "scope": "below", "source": "interpreter"})
+        from mtlib.sessions import write_guard
+        write_guard(self.cfg, self.store.get_session(sid))
+        tid = self.store.add_task(sid, "test", "c")
+        sdir = session_dir(self.cfg, sid)
+        ag = agents.make(agents.Context(cfg=self.cfg, store=self.store, srow=self.store.get_session(sid),
+                                        task=self.store.get_task(tid), task_dir=sdir / f"t{tid}", session_dir=sdir))
+        (sdir / f"t{tid}").mkdir(parents=True, exist_ok=True)
+        ag.write_files()                      # no login in this session: the rules apply from the start
+        self.assertTrue(ag.logged_in)
+        ag.on_page(f"{DEMO}/pricing")
+        self.assertTrue(ag.scope_flag.exists())
+        env = dict(os.environ, **ag.env())
+
+        def hook(tool, args):
+            out = subprocess.run([sys.executable, str(ROOT / "hooks" / "guard.py")], env=env, capture_output=True,
+                                 text=True, input=json.dumps({"tool_name": "mcp__playwright__browser_" + tool,
+                                                              "tool_input": args}))
+            return out.stdout
+        self.assertIn("deny", hook("click", {"element": "Buy button"}))
+        self.assertIn("go back", hook("click", {"element": "Buy button"}).lower())
+        self.assertEqual(hook("navigate_back", {}), "")
+        self.assertEqual(hook("navigate", {"url": f"{DEMO}/reports"}), "")
+        self.assertIn("deny", hook("navigate", {"url": f"{DEMO}/pricing"}))
+        ag.on_page(f"{DEMO}/reports/2026")
+        self.assertFalse(ag.scope_flag.exists())
+        self.assertEqual(hook("click", {"element": "Generate report"}), "")
+
+
+# ---------------------------------------------------------------- Jira connection and tickets in instructions
+TICKET = {"key": "AST-12", "fields": {
+    "summary": "Risk Hub filters lose their values", "issuetype": {"name": "Story"}, "status": {"name": "In Progress"},
+    "description": {"type": "doc", "version": 1, "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Test the Risk Hub filters on "},
+                                          {"type": "text", "text": "/reports"}]},
+        {"type": "bulletList", "content": [{"type": "listItem", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "Filters keep their values after reload"}]}]}]}]},
+    "customfield_100": {"type": "doc", "version": 1, "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Given a filter, when I reload, then it stays"}]}]},
+    "comment": {"comments": [{"author": {"displayName": "Dana"}, "body": {"type": "doc", "version": 1, "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Also check the date picker"}]}]}}]}},
+    "names": {"customfield_100": "Acceptance Criteria", "summary": "Summary"}}
+
+
+class TicketStub(BaseHTTPRequestHandler):
+    seen: list = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        TicketStub.seen.append((self.path, self.headers.get("Authorization")))
+        if self.path.startswith("/rest/api/3/issue/AST-12"):
+            code, out = 200, TICKET
+        elif self.path == "/rest/api/3/myself":
+            code, out = 200, {"displayName": "QA Bot", "emailAddress": "qa@test"}
+        else:
+            code, out = 404, {"errorMessages": ["Issue does not exist or you do not have permission to see it."]}
+        raw = json.dumps(out).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+class TestJiraTickets(Base):
+    def setUp(self):
+        super().setUp()
+        TicketStub.seen = []
+        self.stub = ThreadingHTTPServer(("127.0.0.1", 0), TicketStub)
+        threading.Thread(target=self.stub.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.stub.shutdown()
+        super().tearDown()
+
+    def connect(self):
+        from mtlib import jira_settings
+        self.cfg.jira_base_url = f"http://127.0.0.1:{self.stub.server_address[1]}"
+        self.cfg.jira_email = "qa@test"
+        jira_settings.set_token(self.cfg, "test-token-1234567890")
+
+    def test_keys_and_adf(self):
+        from mtlib import jira
+        self.assertEqual(jira.ticket_keys("see AST-12, https://x.atlassian.net/browse/RISK-7 and UTF-8, CVE-2024"),
+                         ["AST-12", "RISK-7"])
+        text = jira.adf_to_text(TICKET["fields"]["description"])
+        self.assertIn("Test the Risk Hub filters on /reports", text)
+        self.assertIn("- Filters keep their values after reload", text)
+
+    def test_get_issue_reads_description_criteria_and_optional_comments(self):
+        from mtlib import jira
+        self.connect()
+        t = jira.get_issue(self.cfg, "AST-12")
+        self.assertEqual((t["summary"], t["status"], t["type"]), ("Risk Hub filters lose their values", "In Progress", "Story"))
+        self.assertIn("Acceptance Criteria:\nGiven a filter", t["text"])
+        self.assertNotIn("date picker", t["text"])
+        self.assertIn("Dana: Also check the date picker", jira.get_issue(self.cfg, "AST-12", comments=True)["text"])
+        self.assertTrue(TicketStub.seen[0][1].startswith("Basic "))
+        bad = jira.read_tickets(self.cfg, "and AST-99 too")
+        self.assertIn("404", bad[0]["error"])
+
+    def test_tickets_reach_every_worker(self):
+        self.connect()
+        sid = self.new_session(instructions="Test what AST-12 asks for.")
+        self.run_all()
+        s = self.store.get_session(sid)
+        self.assertEqual([t["key"] for t in s["tickets"]], ["AST-12"])
+        self.assertFalse(s["tickets"][0].get("error"))
+        prompts = [p.read_text(encoding="utf-8") for p in self.cfg.runs_dir.glob(f"s{sid}/t*/append.txt")]
+        self.assertTrue(prompts)
+        for text in prompts:
+            self.assertIn("AST-12 [Story, In Progress]: Risk Hub filters lose their values", text)
+            self.assertIn("Given a filter, when I reload, then it stays", text)
+        self.assertTrue(any("Jira AST-12 read" in e["text"] for e in self.store.events(sid, 200)))
+
+    def test_without_a_connection_the_session_says_so(self):
+        sid = self.new_session(instructions="Test what AST-12 asks for.")
+        self.run_all()
+        t = self.store.get_session(sid)["tickets"][0]
+        self.assertIn("Jira connection", t["error"])
+        text = next(self.cfg.runs_dir.glob(f"s{sid}/t*/append.txt")).read_text(encoding="utf-8")
+        self.assertIn("AST-12: could not be read", text)
+        self.assertIn("Don't guess what it says", text)
+
+
+class TestJiraSettingsApi(TestServer):
+    def call(self, path, body=None, headers=None):
+        h = {"X-MT": "1", "Content-Type": "application/json"}
+        h.update(headers or {})
+        r = urllib.request.Request(self.base + path, data=json.dumps(body).encode() if body is not None else None,
+                                   headers=h, method="POST" if body is not None else "GET")
+        code, raw = fetch(r)
+        return code, json.loads(raw or b"null")
+
+    def test_token_is_write_only_and_never_stored(self):
+        token = "ATATT-test-token-ABCDEFGHIJ1234567890"
+        form = {"base_url": "https://example.atlassian.net/", "email": "qa@example.com", "project_key": "qa", "token": token}
+        self.assertEqual(self.call("/api/jira/settings", form, {"X-MT": "0"})[0], 403)
+        code, out = self.call("/api/jira/settings", form)
+        self.assertEqual(code, 200, out)
+        self.assertEqual((out["base_url"], out["project_key"], out["token_saved"], out["ready"]),
+                         ("https://example.atlassian.net", "QA", True, True))
+        code, got = self.call("/api/jira/settings")
+        self.assertNotIn(token, json.dumps(got))
+        self.assertNotIn(token, json.dumps(self.call("/api/state")[1]))
+        self.assertNotIn(token, repr(self.cfg))
+        db_bytes = b"".join(p.read_bytes() for p in self.cfg.db_path.parent.glob("mt.db*"))
+        self.assertNotIn(token.encode(), db_bytes)
+        self.assertFalse(any(token in p.read_text(errors="ignore") for p in self.cfg.data_dir.rglob("*") if p.is_file()
+                             and p.suffix not in (".db", ".db-wal", ".db-shm")))
+        code, out = self.call("/api/jira/settings", dict(form, token="", clear_token=True))
+        self.assertFalse(out["token_saved"])
+        for bad in ({"base_url": "http://plain.test"}, {"email": "nope"}, {"project_key": "bad key"},
+                    {"token": "short"}):
+            self.assertEqual(self.call("/api/jira/settings", dict(form, **bad))[0], 400, bad)
+
+    def test_connection_test(self):
+        from mtlib import jira_settings
+        stub = ThreadingHTTPServer(("127.0.0.1", 0), TicketStub)
+        threading.Thread(target=stub.serve_forever, daemon=True).start()
+        try:
+            self.assertEqual(self.call("/api/jira/test", {})[0], 400)
+            self.cfg.jira_base_url = f"http://127.0.0.1:{stub.server_address[1]}"
+            self.cfg.jira_email = "qa@test"
+            jira_settings.set_token(self.cfg, "test-token-1234567890")
+            code, out = self.call("/api/jira/test", {})
+            self.assertEqual((code, out["name"]), (200, "QA Bot"))
+        finally:
+            stub.shutdown()
+
+
+class TestLoginFirst(Base):
+    def run_session(self, mode=None):
+        if mode:
+            os.environ["FAKE_CLAUDE_MODE"] = mode
+        sid = self.new_session(username="qa@test", password="s3cret!",
+                               instructions=f"After you log in, make your tests under {DEMO}/reports only.")
+        self.run_all()
+        return sid
+
+    def check(self, sid, how):
+        events = [e["text"] for e in self.store.events(sid, 500)]
+        self.assertFalse([t for t in events if "login-organization" in t and "left the focus area" in t], events)
+        self.assertFalse([t for t in events if "guard blocked" in t and "outside the area" in t and "login" in t])
+        self.assertTrue(any(f"logged in ({how}" in t for t in events), events)
+        pages = {p["url"]: p["visited"] for p in self.store.pages(sid)}
+        self.assertFalse(pages.get(f"{DEMO}/login-organization"))      # recorded, never tested
+        self.assertTrue(pages.get(f"{DEMO}/reports"))
+        self.assertIn("Generate report returns 500", [x["title"] for x in self.store.suspects(sid)])
+        system = next(self.cfg.runs_dir.glob(f"s{sid}/t*/append.txt")).read_text(encoding="utf-8")
+        self.assertLess(system.index("LOGIN FIRST"), system.index("USER INSTRUCTIONS - BINDING (once you are logged in)"))
+
+    def test_login_then_instructions(self):
+        self.check(self.run_session(), "")   # the page change or the LOGGED_IN line, whichever comes first
+
+    def test_login_detected_without_the_marker(self):
+        self.check(self.run_session("login_auto"), "left the login pages")
+
+    def test_guard_ignores_focus_until_logged_in(self):
+        sid = self.new_session(username="qa@test", password="s3cret!")
+        self.store.update_session(sid, rules={"focus_urls": [f"{DEMO}/reports"], "scope": "below", "source": "interpreter"})
+        from mtlib.sessions import write_guard
+        write_guard(self.cfg, self.store.get_session(sid))
+        flag = self.tmp / "t1" / "loggedin.flag"
+        flag.parent.mkdir(parents=True)
+        env = dict(os.environ, MT_GUARD_FILE=str(self.cfg.runs_dir / f"s{sid}" / "guard.json"), MT_LOGIN_FILE=str(flag))
+
+        def nav(url):
+            return subprocess.run([sys.executable, str(ROOT / "hooks" / "guard.py")], env=env, capture_output=True,
+                                  text=True, input=json.dumps({"tool_name": "mcp__playwright__browser_navigate",
+                                                               "tool_input": {"url": url}})).stdout
+        self.assertEqual(nav(f"{DEMO}/"), "")                    # before login: the landing page is fine
+        self.assertIn("deny", nav("http://evil.test/"))           # other sites never are
+        flag.write_text("x", encoding="utf-8")
+        self.assertIn("deny", nav(f"{DEMO}/pricing"))             # after login: focus rules apply
+        self.assertEqual(nav(f"{DEMO}/login-organization"), "")   # and login pages stay allowed
 
 
 if __name__ == "__main__":

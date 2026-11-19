@@ -144,9 +144,10 @@ def check_port(cfg: Config) -> Check:
 
 def check_jira(cfg: Config) -> Check:
     if not (cfg.jira_base_url or cfg.jira_project_key):
-        return Check("OK", "jira", "not configured (optional)")
+        return Check("OK", "jira", "not configured (optional): set it up in the dashboard's Jira connection panel")
     if not cfg.jira_token:
-        return Check("WARN", "jira", "[jira] is set but JIRA_API_TOKEN isn't (environment or .env)")
+        return Check("WARN", "jira", "URL is set but no token: enter it in the dashboard's Jira connection panel "
+                                     "(kept in memory) or put JIRA_API_TOKEN in .env")
     return Check("OK", "jira", f"{cfg.jira_base_url} project {cfg.jira_project_key}")
 
 

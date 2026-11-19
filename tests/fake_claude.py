@@ -65,7 +65,20 @@ if mode == "crash" or (mode == "crash_once" and role == "explorer"):
         print("boom: simulated crash", file=sys.stderr)
         sys.exit(3)
 
+def login():
+    """Like a real worker in a session with a login: landing page, the tenant picker, then the app."""
+    if "LOGIN FIRST" not in system:
+        return
+    browser("navigate", {"url": BASE + "/"}, BASE + "/")
+    browser("type", {"element": "Organization", "ref": "o1", "text": "acme"}, BASE + "/login-organization")
+    browser("type", {"element": "Username", "ref": "u1", "text": "MT_USERNAME"}, BASE + "/auth/realms/acme/login-actions/authenticate")
+    browser("click", {"element": "Sign in button", "ref": "s1"}, BASE + "/applicationRiskManagement")
+    if mode != "login_auto":
+        say('LOGGED_IN: {"url": "' + BASE + '/applicationRiskManagement"}')
+
+
 if role == "explorer":
+    login()
     browser("navigate", {"url": BASE + "/"})
     say("\n".join([
         f'PAGE: {json.dumps({"url": BASE + "/", "title": "Demo Shop", "kind": "list", "components": ["list: products"], "links": [BASE + "/signup", BASE + "/reports", BASE + "/pricing"]})}',
@@ -82,6 +95,7 @@ if role == "explorer":
     done("Demo shop with signup and reports.")
 elif role == "tester":
     area = (re.search(r"Charter: (.+)", prompt) or re.search(r"(?s)(.)", "?")).group(1).strip()
+    login()
     if mode == "loop":
         for _ in range(20):
             browser("click", {"element": "Same button", "ref": "e9"}, BASE + "/signup")
@@ -125,6 +139,20 @@ elif role == "reproducer":
     tool("Write", {"file_path": spec})
     say('SPEC: {"file": "repro.spec.ts", "assertion": "expect(...)", "status": "fails"}')
     done("spec written")
+elif role == "interpreter":
+    if mode == "rules_fail":
+        done("I could not work out any rules.")
+        sys.exit(0)
+    block = prompt.split("<<<", 1)[-1].split(">>>", 1)[0]
+    urls = re.findall(r"https?://\S+", block)
+    rules = {"focus_urls": [u.rstrip(".,") for u in urls if "/admin" not in u],
+             "scope": "page" if "only this page" in block else "below",
+             "exclude_paths": ["/admin/**"] if "admin" in block else [],
+             "forbidden_actions": ["export"] if "export" in block.lower() else [],
+             "required": ["use the name Ana"] if "Ana" in block else [], "notes": ["focus on breaking things"],
+             "summary": "test only the given area"}
+    say("RULES: " + json.dumps(rules))
+    done("rules")
 elif role == "reporter":
     say('DUPLICATE: {"bug": 999, "of": 1}')
     done("## Summary\nThe demo shop was explored and two defects were confirmed.\n\n## Recommendations\n- Fix them.")

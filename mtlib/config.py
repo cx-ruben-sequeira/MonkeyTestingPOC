@@ -10,7 +10,7 @@ import os
 import shlex
 import shutil
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,6 +69,7 @@ class Config:
     jira_project_key: str = ""
     jira_issue_type: str = "Bug"
     jira_labels: list[str] = None
+    jira_token_memory: str = field(default="", repr=False)   # set from the dashboard; never on disk or in repr()
     data_dir: Path = ROOT
 
     def __post_init__(self):
@@ -114,11 +115,18 @@ class Config:
 
     @property
     def jira_token(self) -> str:
-        return os.environ.get("JIRA_API_TOKEN", "")
+        """The token entered in the dashboard (memory only), else JIRA_API_TOKEN (environment or .env)."""
+        return self.jira_token_memory or os.environ.get("JIRA_API_TOKEN", "")
+
+    @property
+    def jira_read_ready(self) -> bool:
+        """Enough to read tickets (no project key needed)."""
+        return bool(self.jira_base_url and self.jira_email and self.jira_token)
 
     @property
     def jira_ready(self) -> bool:
-        return bool(self.jira_base_url and self.jira_email and self.jira_project_key and self.jira_token)
+        """Enough to create bugs."""
+        return bool(self.jira_read_ready and self.jira_project_key)
 
     def ensure_dirs(self) -> None:
         for d in (self.db_path.parent, self.runs_dir, self.logs_dir):

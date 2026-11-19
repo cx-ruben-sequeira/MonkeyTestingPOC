@@ -17,7 +17,9 @@ from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from ..config import ROOT, Config
+from .. import rules as rules_mod
 from ..proc import python
+from ..scope import Scope
 from ..store import Store
 from ..worker import BROWSER_PREFIX, RunResult, checked_argv, fwd, program, quote_safe, rel_arg, short
 
@@ -116,11 +118,38 @@ class Agent:
         self.ctx = ctx
         self.cfg, self.store, self.srow, self.task = ctx.cfg, ctx.store, ctx.srow, ctx.task
         self.sid, self.tid = int(ctx.srow["id"]), int(ctx.task["id"])
+        self.scope = Scope.for_session(ctx.srow)
+        self.saw_login_page = False
 
     # ------------------------------------------------------------ what the run may do
     @property
     def cwd(self) -> Path:
         return self.ctx.task_dir
+
+    @property
+    def scope_flag(self) -> Path:
+        return self.ctx.task_dir / "outofscope.flag"
+
+    @property
+    def login_flag(self) -> Path:
+        """Exists once this worker is logged in. Until then the user's focus rules don't apply (the worker
+        must be free to reach the login pages); only the safety guard does."""
+        return self.ctx.task_dir / "loggedin.flag"
+
+    @property
+    def needs_login(self) -> bool:
+        return bool(self.uses_browser and (self.srow.get("has_auth") or self.srow.get("login_url")))
+
+    @property
+    def logged_in(self) -> bool:
+        return self.login_flag.exists()
+
+    def mark_logged_in(self, url: str, how: str) -> None:
+        if self.logged_in:
+            return
+        write_in(self.ctx.task_dir, "loggedin.flag", f"{how}: {url}")
+        self.store.add_event(self.sid, self.tid, self.kind, "info",
+                             f"logged in ({how}{', on ' + url if url else ''}); the user's instructions apply from now on")
 
     @property
     def page_load_s(self) -> int:
@@ -150,6 +179,9 @@ class Agent:
     def prompt(self) -> str:
         raise NotImplementedError
 
+    async def prepare(self) -> None:
+        """Runs before Claude starts (may do slow work, e.g. reading Jira, off the event loop)."""
+
     def on_marker(self, name: str, data) -> None:
         """A marker line from the stream (PAGE:, SUSPECT:, ...)."""
 
@@ -175,14 +207,32 @@ class Agent:
             "url": row["url"], "origin": row["origin"],
             "mode_text": string.Template(MODES.get(mode, MODES["hybrid"])).safe_substitute(seed=seed),
             "seed": seed, "auth": auth,
-            "instructions": (row["instructions"] or "").strip() or "(none)",
+            "instructions": instructions_with_tickets(row),
             "destructive": ("Destructive actions are ALLOWED in this session." if row["allow_destructive"] else
                             "Destructive actions (delete, remove, pay, purchase, transfer, send, invite, "
                             "unsubscribe, reset...) are BLOCKED by a guard; if one is blocked, note it and move on."),
+            "focus_start": self.scope.start_url, "scope": self.scope.describe(),
+            "login_steps": self.login_steps(),
+            "rules": rules_mod.as_text(row.get("rules") or {}),
             "budget": self.task["action_budget"] or row["max_actions"],
             "page_load_s": self.page_load_s,
             "session_id": self.sid, "task_id": self.tid,
         }
+
+    def login_steps(self) -> str:
+        if not self.needs_login:
+            return "LOGIN: none needed. The USER INSTRUCTIONS below apply from your first action."
+        where = self.srow.get("login_url") or self.srow["url"]
+        return ("LOGIN FIRST. Your browser starts logged out, and logging in always comes before anything else:\n"
+                f"1. Open {self.srow['url']} (it sends you to the login page) or the login page {where}.\n"
+                "2. Log in: type the literal text MT_USERNAME into the user/email field and MT_PASSWORD into the "
+                "password field (the browser swaps in the real values). Pick the organization/tenant if asked. "
+                "Login pages are always allowed.\n"
+                "3. Wait until the app shows a normal page (not a login page), then print on its own line:\n"
+                '   LOGGED_IN: {"url": "<the page you are on now>"}\n'
+                f"4. Only now do the USER INSTRUCTIONS below start to apply: go to {self.scope.start_url} and follow them.\n"
+                "The instructions are about what to do after login: they are never a reason to skip, change or delay "
+                "the login. If the login fails, say so in a NOTE line and stop.")
 
     def map_summary(self, limit: int = 60) -> str:
         pages = self.store.pages(self.sid)
@@ -208,6 +258,32 @@ class Agent:
         o = origin_of(url)
         return not o or o in self.allowed_origins()
 
+    def on_page(self, url: str) -> None:
+        """The browser really is on `url` (from a tool result). Outside the user's focus area: the worker is
+        told to go back, and the guard refuses everything else until it does. Inside: mapped as visited."""
+        if self.needs_login and not self.logged_in:
+            if self.scope.is_auth(url):
+                self.saw_login_page = True
+            elif self.saw_login_page:
+                self.mark_logged_in(url, "left the login pages")   # back on a normal app page after login
+            if not self.logged_in:
+                self.record_page({"url": url, "visited": False})    # before login: map it, don't police it
+                return
+        why = self.scope.reason(url)
+        if why:
+            first = not self.scope_flag.exists()
+            write_in(self.ctx.task_dir, "outofscope.flag", f"{url}: {why}")
+            if first:
+                self.store.add_event(self.sid, self.tid, self.kind, "blocked", f"left the focus area: {url} ({why}); told to go back")
+            self.record_page({"url": url, "visited": False})
+            return
+        if self.scope_flag.exists():
+            try:
+                self.scope_flag.unlink()
+            except OSError as e:
+                self.store.add_event(self.sid, self.tid, self.kind, "warn", f"couldn't clear the scope flag: {e}")
+        self.record_page({"url": url, "visited": True})
+
     def record_page(self, data) -> None:
         if isinstance(data, str):
             data = {"url": data}
@@ -217,7 +293,7 @@ class Agent:
         if not url:
             return
         self.store.upsert_page(self.sid, url, title=_s(data.get("title"), 200), kind=_s(data.get("kind"), 40),
-                               visited=bool(data.get("visited", True)),
+                               visited=bool(data.get("visited", True)) and self.scope.allows(url),
                                components=[str(c) for c in (data.get("components") or [])][:40])
         for link in data.get("links") or []:
             dst = self.page_url(link)
@@ -262,6 +338,12 @@ class Agent:
             settings["hooks"]["PostToolUse"] = [{"matcher": "mcp__playwright__browser_.*",
                                                  "hooks": [{"type": "command", "command": hook_command(SHOT_HOOK),
                                                             "timeout": 15}]}]
+        if self.uses_browser:
+            if self.needs_login:
+                if self.login_flag.exists():
+                    self.login_flag.unlink()   # a retried run starts logged out again
+            else:
+                write_in(d, "loggedin.flag", "no login needed")
         files = {"settings.json": json.dumps(settings, indent=1),
                  "append.txt": render("_system", **self.common_values())}
         if self.uses_browser:
@@ -314,7 +396,26 @@ class Agent:
         return {"MT_GUARD_FILE": fwd(self.ctx.session_dir / "guard.json"),
                 "MT_BLOCK_LOG": fwd(self.ctx.session_dir / "blocked.log"),
                 "MT_STOP_FILE": fwd(self.ctx.task_dir / "stop.flag"),
+                "MT_SCOPE_FILE": fwd(self.scope_flag),
+                "MT_LOGIN_FILE": fwd(self.login_flag),
                 **({"MT_SHOT_DIR": fwd(self.shots_dir)} if self.shots_dir else {})}
+
+
+def instructions_with_tickets(row: dict) -> str:
+    """The user's instructions, plus the text of the Jira tickets they named (read by the interpreter)."""
+    text = (row.get("instructions") or "").strip() or "(none)"
+    tickets = row.get("tickets") or []
+    if not tickets:
+        return text
+    parts = [text, "", "Jira tickets named above (read from Jira by MonkeyTesting; they are part of the instructions:"
+                       " what to test, acceptance criteria, steps):"]
+    for t in tickets:
+        if t.get("error"):
+            parts.append(f"--- {t['key']}: could not be read ({t['error']}). Don't guess what it says.")
+            continue
+        head = f"--- {t['key']}" + (f" [{t.get('type')}, {t.get('status')}]" if t.get("type") else "")
+        parts += [f"{head}: {t.get('summary', '')}", t.get("text") or "(no description)"]
+    return "\n".join(parts)
 
 
 def _s(v, n: int):
@@ -336,10 +437,11 @@ def write_in(directory, name: str, content: str, mode: int = 0o600) -> Path:
 
 def make(ctx: Context) -> Agent:
     from .explorer import Explorer
+    from .interpreter import Interpreter
     from .reporter import Reporter
     from .reproducer import Reproducer
     from .tester import Tester
-    kinds = {"explore": Explorer, "test": Tester, "repro": Reproducer, "report": Reporter}
+    kinds = {"rules": Interpreter, "explore": Explorer, "test": Tester, "repro": Reproducer, "report": Reporter}
     return kinds[ctx.task["kind"]](ctx)
 
 

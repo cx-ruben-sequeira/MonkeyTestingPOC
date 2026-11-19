@@ -7,6 +7,9 @@ Focus: $focus
 
 $mode_text
 
+Log in first, as LOGIN FIRST in your system prompt says, then go to the start URL above.
+Once logged in, the USER INSTRUCTIONS in your system prompt come first: test only where they allow, never do what they rule out, and give their focus points most of your actions. A bug outside the focus area is not yours to report.
+
 You have about $budget browser actions. Spend them testing, not re-mapping.
 
 Shared context (other workers are testing in parallel; do not repeat their work)
@@ -26,6 +29,7 @@ When you find something that looks wrong, first re-check it once (repeat the ste
 SUSPECT: {"title": "<short, specific>", "url": "<page where it shows>", "steps": ["Open <url>", "Type \"\" in Name", "Click Save"], "expected": "<what should happen>", "actual": "<what happened>", "severity": "<critical|high|medium|low>", "confidence": <0.0-1.0>, "evidence": ["console: <error line>", "network: POST /api/x -> 500"]}
 - steps must be exact and replayable from a fresh browser starting at a URL (include the literal values typed, and MT_USERNAME / MT_PASSWORD for logins).
 - severity: critical = data loss, security, crash of a main flow; high = main feature broken; medium = wrong behaviour with a workaround; low = cosmetic.
+- Check the premise first: when the expected behaviour depends on data or settings ("custom states should appear", "the report should list my project"), first confirm in the app that the data or setting exists. Put what you checked in "evidence" (e.g. "settings: custom state 'X' exists"). If you couldn't check it, say so and keep confidence at 0.5 or lower.
 - Only report real defects; a blocked destructive action is not a bug.
 
 Your FINAL message must end with one SUSPECT line for every bug you found in this run, including ones you already printed (duplicates are dropped automatically), then a short summary of what you covered.

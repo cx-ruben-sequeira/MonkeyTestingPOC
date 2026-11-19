@@ -57,6 +57,27 @@ mt serve
 
 Then open http://127.0.0.1:8766. Under **New session**, enter a URL, pick a mode and a duration, and click **Start**.
 
+**Instructions and constraints** are followed strictly. When a session has instructions, a short interpreter run (no browser) reads them first and turns them into rules. Live monitor shows what it understood under **Your instructions, as understood**:
+
+| You write | It becomes | Enforced by |
+|---|---|---|
+| a URL or path to test ("make your tests under https://…/riskhub") | focus page, scope *this page and below*, or *this page only* when you say so | the guard: navigation outside is blocked, and a worker whose click lands outside must go back first |
+| places to avoid ("don't open /admin") | excluded paths | the guard blocks navigation to them |
+| things not to touch ("never press Delete or Export") | blocked actions | the guard blocks clicks and typing on matching elements |
+| must-dos ("use project name QA-Auto-1") and anything else | must-do items and notes | every worker's prompt |
+
+Your full text also goes to every worker (Explorer, Tester, Reproducer, Reporter) as a binding section at the top of its system prompt. The Explorer only writes charters inside the focus, and suspects found outside the focus are dropped. Login pages always stay reachable.
+
+**Login comes first.** In a session with a login, each browser worker starts logged out:
+
+1. It opens the app and logs in, with organization pickers such as `/login-organization` and other login pages always allowed.
+2. It reports `LOGGED_IN`. The orchestrator also notices on its own when the browser leaves the login pages.
+3. From then on, your instructions apply in full, and the worker goes to the focus page.
+
+Before login only the safety guard applies: other sites and destructive actions stay blocked.
+
+The interpreter never guesses a URL from a page name. "Only the Applications page" stays a binding note; write the URL or path if you want it enforced. If the interpreter run fails, a simple parser reads the URLs and "don't …" paths itself.
+
 **Page load wait** (default 120 seconds, 5–600) is how long a page may take to load before it counts as broken. It sets the workers' browser navigation timeout, and the navigation and `expect()` waits in the reproduction tests. Workers are also told to wait that long and reload once before reporting a blank, 404 or "not found" page. Raise it for slow staging hosts; from the CLI use `--page-load 180`. Stop the server with Ctrl+C on any OS: workers are stopped together with their whole process tree (claude → node → chromium).
 
 You can also queue a session from the command line:
@@ -134,6 +155,12 @@ Prompts are in `mtlib/agents/prompts/`. Each role is one class in `mtlib/agents/
 - **Priority:** Reproducer > Explorer > Tester > Reporter. A new suspect queues its Reproducer right away.
 - **Limits:** a session has a deadline and a maximum number of browser actions, and every `browser_*` call counts. At the limit, testers are stopped and queued testers are dropped. Reproducers still finish, then the Reporter runs.
 - **N-of-N:** `mtlib/repro.py` runs the spec N times (one Playwright run each, so progress shows live) and reads the JSON reports itself. A suspect is a Bug only if all N runs failed on the same `expect()`. Otherwise it is **Not confirmed (k/N)**.
+- **A failure must reach the bug.** A test broken in the same way every time also fails N/N, so failing N times isn't enough. Each spec imports `test`/`expect` from a generated helper, `mt.ts`, which records where every run really ended. A failed run counts only if:
+  - it got past the spec's checkpoints: `mt.reached(page, /path/)` (on the bug's page) and `mt.ready(locator)` (the list or dropdown loaded);
+  - its `mt.precondition(...)` checks held (for example, "a custom state exists");
+  - it didn't end on a login page.
+
+  A spec with no checkpoint can't confirm a bug. Workers are also told that a missing item is only a bug after waiting for the list to load, scrolling it to the end, using its search box and checking that the item exists.
 - **Shared context:** each tester sees the map, the charters already done and the suspects already found. Duplicate suspects (same page and same title words) are dropped.
 - **Loop guard:** if the same action on the same page is repeated more than `loop_repeat_limit` times, that worker is stopped.
 - **Recovery:** a crashed worker is retried (`max_attempts`). If the Explorer fails for good, the session falls back to one whole-app charter.
@@ -152,13 +179,29 @@ Prompts are in `mtlib/agents/prompts/`. Each role is one class in `mtlib/agents/
 
 ## Jira
 
-Fill in `[jira]` in `config.toml` (`base_url`, `email`, `project_key`, `issue_type`) and export the token:
+Click the **Jira** pill at the top right of the dashboard to open **Jira connection**. Each user enters their own:
 
-```bash
-export JIRA_API_TOKEN=...
-```
+- Jira URL, such as `https://yourcompany.atlassian.net`
+- Atlassian account email
+- API token: create one at id.atlassian.com → Security → API tokens
+- Optionally, a project key, needed only to create bugs
 
-The token is read only from the environment and is never stored. **Open in Jira** needs two clicks, the second one to confirm. It creates the issue through `POST /rest/api/3/issue` with an ADF description (steps, expected, actual, severity, URL, session), then attaches the video and screenshots. Clicking again opens the existing ticket instead of creating a new one.
+**Test connection** checks who the token belongs to.
+
+How the token is handled:
+
+- It's kept **in memory only** while `mt serve` runs. It's never written to disk or the database, never logged, never sent back to the page, and workers never get it.
+- Re-enter it after a restart. To keep it across restarts, put `JIRA_API_TOKEN=...` in `.env` instead.
+- The URL, email and project key are saved and override `[jira]` in `config.toml`.
+
+**Jira tickets in your instructions.** Name tickets in **Instructions and constraints**, as keys (`AST-1234`) or Jira links, and they're read before the session starts:
+
+- **What's read:** summary, type, status, description, and fields such as *Acceptance Criteria* or *Steps*. Comments are read only when you tick **Also read the tickets' comments**.
+- **How it's used:** the ticket text becomes part of the instructions. The interpreter turns it into enforced rules, and every worker gets it.
+- **Where it shows:** Live monitor lists the tickets that were read.
+- **If it fails:** a ticket that can't be read (no Jira connection, no access, wrong key) shows as *not read*, and workers are told not to guess what it says. Up to 5 tickets per session.
+
+**Open in Jira** needs two clicks, the second one to confirm. It creates the issue through `POST /rest/api/3/issue` with an ADF description (steps, expected, actual, severity, URL, session), then attaches the video and screenshots. Clicking again opens the existing ticket instead of creating a new one.
 
 ## Files
 

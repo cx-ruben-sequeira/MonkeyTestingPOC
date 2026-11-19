@@ -14,6 +14,9 @@ $not_confirmed
 Pages
 $map
 
+The user's instructions for this session (report against them: what they asked to focus on, and whether it was covered):
+$instructions
+
 Tasks
 1. Duplicates: if two confirmed bugs describe the same defect, print one line per duplicate, keeping the lower id:
    DUPLICATE: {"bug": <id to hide>, "of": <id to keep>}

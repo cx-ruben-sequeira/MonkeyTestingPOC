@@ -91,8 +91,10 @@ def create(cfg: Config, store: Store, form: dict) -> dict:
         viewport=viewport, instructions=str(form.get("instructions") or "")[:4000], allowed_origins=extra,
         allow_destructive=1 if form.get("allow_destructive") else 0, login_url=login_url or None,
         has_auth=1 if (user or password) else 0,
-        shots_every_action=1 if form.get("shots_every_action") else 0, page_load_s=page_load, status="queued")
+        shots_every_action=1 if form.get("shots_every_action") else 0, page_load_s=page_load,
+        ticket_comments=1 if form.get("ticket_comments") else 0, status="queued")
     write_session_files(cfg, sid, [origin(url)] + extra, bool(form.get("allow_destructive")), user, password)
+    write_guard(cfg, store.get_session(sid))
     store.add_event(sid, None, "dashboard", "info", f"session queued: {url}, {mode}, {duration} min, N={repeats}")
     if form.get("repeat_of") not in (None, ""):
         try:
@@ -118,6 +120,26 @@ def _saved_login(cfg: Config, store: Store, raw) -> tuple[str, str, int]:
     if not saved:
         raise FormError(f"the saved login of session #{old} is gone; type the username and password")
     return saved.get("MT_USERNAME", ""), saved.get("MT_PASSWORD", ""), old
+
+
+def write_guard(cfg: Config, row: dict) -> None:
+    """guard.json for hooks/guard.py: allowed origins, destructive switch, and the rules understood from the
+    user's instructions (focus area, excluded paths, forbidden actions)."""
+    from .dispatcher import session_dir
+    from .scope import Scope
+    sid = int(row["id"])
+    base = os.path.normpath(os.path.abspath(os.fspath(session_dir(cfg, sid))))
+    guard = os.path.normpath(os.path.join(base, "guard.json"))
+    if os.path.dirname(guard) != base:
+        raise ValueError("bad guard path")
+    scope = Scope.for_session(row)
+    rules = row.get("rules") or {}
+    data = {"origins": scope.origins, "allow_destructive": bool(row.get("allow_destructive")),
+            "scope": scope.guard_rules(), "forbidden": list(rules.get("forbidden_actions") or [])}
+    fd = os.open(guard, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.chmod(guard, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
 
 
 def write_session_files(cfg: Config, sid: int, origins: list[str], allow_destructive: bool,

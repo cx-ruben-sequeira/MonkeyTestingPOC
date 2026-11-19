@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 SESSION_ACTIVE = ("queued", "running", "reporting")
 TASK_ACTIVE = ("queued", "running")
 SEVERITIES = ("critical", "high", "medium", "low")
-PRIORITY = {"repro": 30, "explore": 20, "test": 10, "report": 5}
+PRIORITY = {"rules": 40, "repro": 30, "explore": 20, "test": 10, "report": 5}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     shots_every_action INTEGER NOT NULL DEFAULT 0,
     delete_state TEXT,
     page_load_s INTEGER NOT NULL DEFAULT 120,
+    rules TEXT NOT NULL DEFAULT '',
+    tickets TEXT NOT NULL DEFAULT '',
+    ticket_comments INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     phase TEXT,
     seed INTEGER,
@@ -159,7 +162,7 @@ CREATE TABLE IF NOT EXISTS usage (
 SESSION_DEFAULTS = {
     "name": None, "url": None, "origin": None, "mode": None, "duration_min": None, "max_actions": None,
     "repeat_count": None, "browser": None, "viewport": None, "instructions": "", "allowed_origins": "[]",
-    "allow_destructive": 0, "login_url": None, "has_auth": 0, "shots_every_action": 0, "delete_state": None, "page_load_s": 120, "status": "queued", "phase": None, "seed": None,
+    "allow_destructive": 0, "login_url": None, "has_auth": 0, "shots_every_action": 0, "delete_state": None, "page_load_s": 120, "rules": "", "tickets": "", "ticket_comments": 0, "status": "queued", "phase": None, "seed": None,
     "rounds": 0, "actions_used": 0, "cost_usd": 0, "cancel_requested": 0, "created_at": None,
     "started_at": None, "deadline": None, "budget_hit_at": None, "finished_at": None, "report_path": None,
     "summary": None, "error": None,
@@ -178,19 +181,20 @@ SUSPECT_DEFAULTS = {
     "spec_path": None, "video_path": None, "screenshots": "[]", "duplicate_of": None, "jira_key": None,
     "jira_url": None, "created_at": None, "updated_at": None,
 }
-JSON_COLS = {"allowed_origins", "charter", "components", "steps", "evidence", "runs", "screenshots"}
+JSON_COLS = {"allowed_origins", "charter", "components", "steps", "evidence", "runs", "screenshots", "rules", "tickets"}
+DICT_COLS = {"charter", "rules"}
 
 # ---------------------------------------------------------------- fixed statements
 INSERT_SESSION = """
 INSERT INTO sessions (
     name, url, origin, mode, duration_min, max_actions, repeat_count, browser, viewport,
     instructions, allowed_origins, allow_destructive, login_url, has_auth, shots_every_action, delete_state, page_load_s,
-    status, phase, seed, rounds, actions_used, cost_usd, cancel_requested, created_at, started_at, deadline,
+    rules, tickets, ticket_comments, status, phase, seed, rounds, actions_used, cost_usd, cancel_requested, created_at, started_at, deadline,
     budget_hit_at, finished_at, report_path, summary, error)
 VALUES (
     :name, :url, :origin, :mode, :duration_min, :max_actions, :repeat_count, :browser, :viewport,
     :instructions, :allowed_origins, :allow_destructive, :login_url, :has_auth, :shots_every_action, :delete_state,
-    :page_load_s, :status, :phase, :seed, :rounds, :actions_used, :cost_usd, :cancel_requested, :created_at, :started_at,
+    :page_load_s, :rules, :tickets, :ticket_comments, :status, :phase, :seed, :rounds, :actions_used, :cost_usd, :cancel_requested, :created_at, :started_at,
     :deadline, :budget_hit_at, :finished_at, :report_path, :summary, :error)
 """
 UPDATE_SESSION = """
@@ -212,6 +216,9 @@ UPDATE sessions SET
     shots_every_action = CASE WHEN :u_shots_every_action THEN :shots_every_action ELSE shots_every_action END,
     delete_state = CASE WHEN :u_delete_state THEN :delete_state ELSE delete_state END,
     page_load_s = CASE WHEN :u_page_load_s THEN :page_load_s ELSE page_load_s END,
+    rules = CASE WHEN :u_rules THEN :rules ELSE rules END,
+    tickets = CASE WHEN :u_tickets THEN :tickets ELSE tickets END,
+    ticket_comments = CASE WHEN :u_ticket_comments THEN :ticket_comments ELSE ticket_comments END,
     status = CASE WHEN :u_status THEN :status ELSE status END,
     phase = CASE WHEN :u_phase THEN :phase ELSE phase END,
     seed = CASE WHEN :u_seed THEN :seed ELSE seed END,
@@ -312,6 +319,9 @@ SESSION_COLUMNS = "PRAGMA table_info(sessions)"
 ADD_SHOTS_COLUMN = "ALTER TABLE sessions ADD COLUMN shots_every_action INTEGER NOT NULL DEFAULT 0"
 ADD_DELETE_STATE_COLUMN = "ALTER TABLE sessions ADD COLUMN delete_state TEXT"
 ADD_PAGE_LOAD_COLUMN = "ALTER TABLE sessions ADD COLUMN page_load_s INTEGER NOT NULL DEFAULT 120"
+ADD_RULES_COLUMN = "ALTER TABLE sessions ADD COLUMN rules TEXT NOT NULL DEFAULT ''"
+ADD_TICKETS_COLUMN = "ALTER TABLE sessions ADD COLUMN tickets TEXT NOT NULL DEFAULT ''"
+ADD_TICKET_COMMENTS_COLUMN = "ALTER TABLE sessions ADD COLUMN ticket_comments INTEGER NOT NULL DEFAULT 0"
 LIST_SESSIONS = "SELECT * FROM sessions ORDER BY id DESC LIMIT ?"
 ADD_ACTIONS = "UPDATE sessions SET actions_used = actions_used + ? WHERE id = ?"
 SELECT_ACTIONS = "SELECT actions_used FROM sessions WHERE id = ?"
@@ -417,7 +427,7 @@ def _row(r: sqlite3.Row | None) -> dict | None:
     d = dict(r)
     for k in JSON_COLS & d.keys():
         try:
-            d[k] = json.loads(d[k]) if d[k] else ({} if k == "charter" else [])
+            d[k] = json.loads(d[k]) if d[k] else ({} if k in DICT_COLS else [])
         except (TypeError, ValueError):
             pass
     return d
@@ -448,6 +458,12 @@ class Store:
             self.conn.execute(ADD_DELETE_STATE_COLUMN)
         if "page_load_s" not in cols:
             self.conn.execute(ADD_PAGE_LOAD_COLUMN)
+        if "rules" not in cols:
+            self.conn.execute(ADD_RULES_COLUMN)
+        if "tickets" not in cols:
+            self.conn.execute(ADD_TICKETS_COLUMN)
+        if "ticket_comments" not in cols:
+            self.conn.execute(ADD_TICKET_COMMENTS_COLUMN)
 
     @property
     def conn(self) -> sqlite3.Connection:

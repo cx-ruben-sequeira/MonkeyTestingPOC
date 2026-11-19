@@ -118,6 +118,7 @@ class TaskExecution:
         self.store.update_task(self.tid, worker_slot=self.slot, step_name="Starting Claude", current_action="",
                                error=None)
         self.event("info", f"started: {self.task['title']}")
+        await agent.prepare()   # e.g. the interpreter reads the Jira tickets named in the instructions
         argv, prompt = agent.write_files()
         masker = Masker(_secret_values(sdir))
         self.run = ClaudeRun(argv, prompt, agent.cwd, worker_env(agent.env()), tdir / "stream.jsonl",
@@ -184,11 +185,14 @@ class TaskExecution:
         elif ev.kind == "marker":
             if ev.name in ("ACTION", "NOTE"):
                 self.event("note", ev.text)
-            if agent:
+            if agent and ev.name == "LOGGED_IN":
+                url = ev.data.get("url") if isinstance(ev.data, dict) else ""
+                agent.mark_logged_in(str(url or run.parser.url or ""), "the worker reported it")
+            elif agent:
                 agent.on_marker(ev.name, ev.data)
         elif ev.kind == "page":
             if agent and self.kind in LIMITED_KINDS:
-                agent.record_page({"url": ev.text, "visited": True})  # the browser was really there
+                agent.on_page(ev.text)  # the browser was really there: map it and check the focus area
         elif ev.kind == "blocked":
             self.event("blocked", ev.text)
         elif ev.kind == "tool_error":
@@ -323,14 +327,23 @@ class Dispatcher:
             return
         if s["status"] == "queued":
             seed = s["seed"] or random.randint(1, 10**6)
-            self.store.update_session(sid, status="running", phase="exploring", started_at=now, seed=seed,
-                                      deadline=now + int(s["duration_min"]) * 60)
-            budget = max(10, int(int(s["max_actions"]) * self.cfg.explorer_action_share))
-            self.store.add_task(sid, "explore", "Map the application", action_budget=budget)
+            has_rules = bool((s["instructions"] or "").strip())
+            self.store.update_session(sid, status="running", phase="reading instructions" if has_rules else "exploring",
+                                      started_at=now, seed=seed, deadline=now + int(s["duration_min"]) * 60)
+            if has_rules:   # the interpreter turns the instructions into enforced rules before any browser worker
+                self.store.add_task(sid, "rules", "Read the instructions and constraints")
+            else:
+                self.queue_explorer(s)
             self.store.add_event(sid, None, "dispatcher", "info", f"session started on {s['url']} ({s['mode']})")
             return
         tasks = self.store.tasks_for(sid)
         active = [t for t in tasks if t["status"] in ("queued", "running")]
+        if s["status"] == "running" and not any(t["kind"] == "explore" for t in tasks):
+            if any(t["kind"] == "rules" and t["status"] in ("queued", "running") for t in tasks):
+                return   # everything waits for the interpreter
+            self.store.update_session(sid, phase="exploring")
+            self.queue_explorer(self.store.get_session(sid))
+            return
         if s["status"] == "running":
             over = (s["deadline"] and now >= s["deadline"]) or int(s["actions_used"]) >= int(s["max_actions"])
             if over and not s["budget_hit_at"]:
@@ -360,13 +373,20 @@ class Dispatcher:
             self.store.update_session(sid, status="done", phase="done", finished_at=now)
             self.store.add_event(sid, None, "dispatcher", "result", "session finished")
 
+    def queue_explorer(self, s: dict) -> None:
+        budget = max(10, int(int(s["max_actions"]) * self.cfg.explorer_action_share))
+        self.store.add_task(int(s["id"]), "explore", "Map the application", action_budget=budget)
+
     def _next_round(self, s: dict) -> bool:
         """Budget left and pages discovered but not visited: a few more testers on them."""
         sid = int(s["id"])
         if int(s["rounds"]) >= self.cfg.max_rounds:
             return False
+        from .scope import Scope
+        scope = Scope.for_session(s)   # extra rounds only on pages inside the user's focus area
         tried = {(t["charter"] or {}).get("start_url") for t in self.store.tasks_for(sid) if t["kind"] == "test"}
-        todo = [p for p in self.store.pages(sid) if not p["visited"] and p["url"] not in tried][:3]
+        todo = [p for p in self.store.pages(sid) if not p["visited"] and p["url"] not in tried
+                and scope.allows(p["url"])][:3]
         remaining = int(s["max_actions"]) - int(s["actions_used"])
         if not todo or remaining < 10:
             return False
