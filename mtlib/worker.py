@@ -1,10 +1,11 @@
 """Generic headless `claude -p` runner used by every agent role.
 
 Free text never goes on the command line: the prompt goes on stdin, and the tool rules, MCP config
-and extra instructions go into per-task files. Every argument must survive shlex.quote unchanged.
+and extra instructions go into per-task files. Every argument must survive shlex.quote unchanged
+(paths use forward slashes, so this holds on Windows too), and it never goes through a shell.
 The stream-json output is parsed live: marker lines (PAGE:, SUSPECT:, ...) become structured
 events, every Playwright browser_* tool call counts as one action, and the run can be stopped at
-any time (SIGTERM to the process group, SIGKILL 10 s later).
+any time (the whole process tree is stopped through mtlib/proc.py, on any OS).
 """
 from __future__ import annotations
 
@@ -14,14 +15,18 @@ import logging
 import os
 import re
 import shlex
-import signal
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import proc as procs
+
 log = logging.getLogger("mt.worker")
 
-MARKER_RE = re.compile(r"^\s*[`*]*\s*(PAGE|EDGE|CHARTER|SUSPECT|ACTION|SPEC|DUPLICATE|NOTE):\s*(.*?)\s*[`*]*\s*$")
+MARKERS = ("PAGE", "EDGE", "CHARTER", "SUSPECT", "ACTION", "SPEC", "DUPLICATE", "NOTE")
+MARKER_RE = re.compile(r"^\s*[`*]*\s*(" + "|".join(MARKERS) + r"):\s*(.*?)\s*[`*]*\s*$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 PAGE_URL_RE = re.compile(r"Page URL:\s*(\S+)")
 FLAG_RE = re.compile(r"^--?[A-Za-z][A-Za-z-]*$")
 BROWSER_PREFIX = "mcp__playwright__browser_"
@@ -30,12 +35,49 @@ LIMIT_RE = re.compile(r"(rate|usage|session)[ _-]?limit|limit reached|overloaded
 
 
 def checked_argv(args: list) -> list[str]:
-    """Refuse any argument that shell quoting would change, or that looks like an unexpected option."""
+    """Refuse any argument that shell quoting would change, or that looks like an unexpected option.
+    Paths are passed with forward slashes (fwd()), which every OS accepts and quoting leaves alone."""
     out = [str(a) for a in args]
+    if not out or not out[0]:
+        raise ValueError("empty command")
     for a in out:
-        if shlex.quote(a) != a or (a.startswith("-") and not FLAG_RE.match(a)):
+        if CONTROL_RE.search(a) or shlex.quote(a) != a or (a.startswith("-") and not FLAG_RE.match(a)):
             raise ValueError(f"Refusing unsafe command-line argument: {a!r}")
     return out
+
+
+def quote_safe(arg: str) -> bool:
+    return shlex.quote(arg) == arg
+
+
+def program(name: str) -> str:
+    """How to start a program found on PATH: its full forward-slash path, or, when that path has spaces
+    (C:/Program Files/nodejs/node.exe, C:/Users/First Last/...), its file name, which the OS finds on PATH
+    the same way shutil.which did. The bare name when it isn't installed."""
+    found = shutil.which(name)
+    if not found:
+        return name
+    full = fwd(found)
+    return full if quote_safe(full) else os.path.basename(found)
+
+
+def rel_arg(path, cwd) -> str:
+    """A path argument relative to the child's working folder (forward slashes), so a home folder with a
+    space never appears on a command line; the absolute path when that is shorter or the only option."""
+    full = fwd(path)
+    try:
+        rel = Path(os.path.relpath(os.path.normpath(os.path.abspath(os.fspath(path))),
+                                   os.path.normpath(os.path.abspath(os.fspath(cwd))))).as_posix()
+    except ValueError:   # another drive on Windows
+        return full
+    if quote_safe(full) and len(full) <= len(rel):
+        return full
+    return rel if quote_safe(rel) else full
+
+
+def fwd(path) -> str:
+    """Absolute path with forward slashes (what settings and MCP JSON files get on every OS)."""
+    return Path(os.path.normpath(os.path.abspath(os.fspath(path)))).as_posix()
 
 
 def inside(base, path) -> Path:
@@ -253,18 +295,15 @@ class ClaudeRun:
             return
         self.stop_reason = reason
         if self.proc and self.proc.returncode is None:
-            self._signal(signal.SIGTERM)
+            procs.terminate_tree(self.proc.pid)
             try:
-                asyncio.get_running_loop().call_later(10, self._signal, signal.SIGKILL)
+                asyncio.get_running_loop().call_later(10, self._kill)
             except RuntimeError:
                 pass
 
-    def _signal(self, sig) -> None:
-        if self.proc and self.proc.returncode is None:
-            try:
-                os.killpg(self.proc.pid, sig)
-            except (ProcessLookupError, PermissionError):
-                pass
+    def _kill(self) -> None:
+        if self.proc:
+            procs.kill_running(self.proc)
 
     async def _read_stderr(self) -> None:
         assert self.proc and self.proc.stderr
@@ -280,9 +319,9 @@ class ClaudeRun:
         self.proc = await asyncio.create_subprocess_exec(
             *[shlex.quote(a) for a in self.argv], cwd=str(self.cwd),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            start_new_session=True, limit=64 * 1024 * 1024, env=self.env)
+            limit=64 * 1024 * 1024, env=self.env, **procs.group_kwargs())
         if self.stop_reason:  # stopped while starting
-            self._signal(signal.SIGTERM)
+            procs.terminate_tree(self.proc.pid)
         self.proc.stdin.write(self.prompt.encode("utf-8"))
         try:
             await self.proc.stdin.drain()
@@ -311,15 +350,22 @@ class ClaudeRun:
                     except Exception:  # a handler bug must not kill the run
                         log.exception("event handler failed")
         rc = await self.proc.wait()
+        procs.reap_group(self.proc.pid)  # leftover node / chromium children of a finished run (POSIX)
         await stderr_task
         return RunResult(rc=rc, parser=self.parser, stop_reason=self.stop_reason, stderr_tail=self.stderr_tail)
 
 
+SECRET_ENV = ("JIRA_API_TOKEN",)   # workers never get the Jira token
+
+
 def worker_env(extra: dict | None = None) -> dict:
+    """The worker's environment: ours minus the Jira token, plus the usual user tool folders on POSIX."""
     env = dict(os.environ)
-    more = [str(Path.home() / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin"]
-    parts = env.get("PATH", "/usr/bin:/bin").split(":")
-    env["PATH"] = ":".join([p for p in more if p not in parts] + parts)
-    env.pop("JIRA_API_TOKEN", None)  # workers never need it
+    if os.name != "nt":
+        more = [str(Path.home() / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+        parts = env.get("PATH", "/usr/bin:/bin").split(os.pathsep)
+        env["PATH"] = os.pathsep.join([p for p in more if p not in parts] + parts)
+    for k in SECRET_ENV:
+        env.pop(k, None)
     env.update(extra or {})
     return env

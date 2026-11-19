@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+POSIX = os.name != "nt"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "hooks"))
 
@@ -212,7 +213,8 @@ class TestSessions(Base):
         self.assertEqual(s["repeat_count"], 5)  # default N
         self.assertEqual(s["has_auth"], 1)
         sec = self.cfg.runs_dir / f"s{sid}" / "secrets.env"
-        self.assertEqual(stat.S_IMODE(sec.stat().st_mode), 0o600)
+        if POSIX:   # Windows has no owner/group/other bits; the file lives in the user's own profile
+            self.assertEqual(stat.S_IMODE(sec.stat().st_mode), 0o600)
         self.assertNotIn("hunter22", json.dumps(s))
         self.assertTrue(sessions.looks_like_test_host("https://qa.shop.io"))
         self.assertTrue(sessions.looks_like_test_host("https://shop-staging.example.com"))
@@ -422,7 +424,7 @@ class TestServer(Base):
 
 
 # ---------------------------------------------------------------- real Playwright against the demo app
-@unittest.skipUnless((ROOT / "node_modules" / "@playwright" / "test").exists(), "run ./install.sh first")
+@unittest.skipUnless((ROOT / "runner" / "node_modules" / "@playwright" / "test").exists(), "run mt install first")
 class TestRealRepro(Base):
     def setUp(self):
         super().setUp()
@@ -458,6 +460,480 @@ class TestRealRepro(Base):
                      "  await expect(page.getByRole('heading', { name: 'About' })).toBeVisible();")
         out = asyncio.run(repro.run_repeats(self.cfg, d, 2))
         self.assertEqual((out["verdict"], out["failed"]), ("not_confirmed", 0), out)
+
+
+# ---------------------------------------------------------------- screenshot after every action
+def png_size(path) -> tuple[int, int]:
+    full = os.path.normpath(os.path.abspath(os.fspath(path)))
+    if not full.endswith(".png") or not os.path.isfile(full):
+        raise AssertionError(f"not a PNG file: {full}")
+    with open(full, "rb") as fh:
+        head = fh.read(24)
+    assert head[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+class TestShots(Base):
+    def agent_for(self, sid, kind="test"):
+        from mtlib import agents
+        from mtlib.dispatcher import session_dir
+        tid = self.store.add_task(sid, kind, "charter")
+        sdir = session_dir(self.cfg, sid)
+        ctx = agents.Context(cfg=self.cfg, store=self.store, srow=self.store.get_session(sid),
+                             task=self.store.get_task(tid), task_dir=sdir / f"t{tid}", session_dir=sdir)
+        return agents.make(ctx), tid
+
+    def test_option_wires_hook_and_init_page(self):
+        sid = self.new_session(shots_every_action=True)
+        self.assertEqual(self.store.get_session(sid)["shots_every_action"], 1)
+        agent, tid = self.agent_for(sid)
+        agent.write_files()
+        settings = json.loads((agent.cwd / "settings.json").read_text())
+        self.assertIn("PostToolUse", settings["hooks"])
+        server = json.loads((agent.cwd / "mcp.json").read_text())["mcpServers"]["playwright"]
+        self.assertIn("--init-page", server["args"])
+        self.assertEqual(server["env"]["MT_SHOT_DIR"], str(agent.cwd / "shots"))
+        self.assertEqual(agent.env()["MT_SHOT_DIR"], str(agent.cwd / "shots"))
+        self.assertTrue((agent.cwd / "shots").is_dir())
+
+    def test_off_by_default(self):
+        sid = self.new_session()
+        agent, _ = self.agent_for(sid)
+        agent.write_files()
+        self.assertNotIn("PostToolUse", json.loads((agent.cwd / "settings.json").read_text())["hooks"])
+        self.assertNotIn("--init-page", json.loads((agent.cwd / "mcp.json").read_text())["mcpServers"]["playwright"]["args"])
+        self.assertNotIn("MT_SHOT_DIR", agent.env())
+
+    def test_old_database_gets_the_column(self):
+        import sqlite3
+        db = self.tmp / "old" / "mt.db"
+        db.parent.mkdir()
+        c = sqlite3.connect(db)
+        c.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, url TEXT NOT NULL)")
+        c.commit()
+        c.close()
+        cols = {r["name"] for r in Store(db).conn.execute("PRAGMA table_info(sessions)")}
+        self.assertIn("shots_every_action", cols)
+
+
+class TestShotsZip(TestServer):
+    def test_zip_only_after_the_session_ends(self):
+        import io
+        import zipfile
+        sid = self.new_session(shots_every_action=True)
+        tid = self.store.add_task(sid, "test", "charter")
+        shots = self.cfg.runs_dir / f"s{sid}" / f"t{tid}" / "shots"
+        for i, verb in enumerate(("navigate", "click")):
+            name = f"{1795000000000000000 + i}-{verb}"
+            write_under(self.tmp, shots / f"{name}.png", b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
+            write_under(self.tmp, shots / f"{name}.json", json.dumps({"action": verb, "target": f"thing {i}"}))
+        write_under(self.tmp, shots / "1795000000000000009-click.tmp.png", b"half written")
+        url = self.base + f"/api/sessions/{sid}/screenshots.zip"
+        self.assertEqual(fetch(urllib.request.Request(url))[0], 409)   # still queued
+        self.assertEqual(self.req(f"/api/state?session={sid}")[1]["selected"]["shot_count"], 2)
+        self.store.update_session(sid, status="done")
+        code, raw = fetch(urllib.request.Request(url))
+        self.assertEqual(code, 200)
+        z = zipfile.ZipFile(io.BytesIO(raw))
+        folder = f"session-{sid}-screenshots/"
+        self.assertEqual(sorted(z.namelist()), sorted([folder + f"0001_t{tid}-test_navigate.png",
+                                                       folder + f"0002_t{tid}-test_click.png", folder + "index.csv"]))
+        self.assertIn("thing 1", z.read(folder + "index.csv").decode())
+        other = self.new_session()
+        self.store.update_session(other, status="done")
+        self.assertEqual(fetch(urllib.request.Request(self.base + f"/api/sessions/{other}/screenshots.zip"))[0], 404)
+
+
+@unittest.skipUnless((ROOT / "runner" / "node_modules" / "@playwright" / "mcp").exists(), "run mt install first")
+class TestRealShots(Base):
+    """The real Playwright MCP with the init-page module, driven over stdio, plus the real PostToolUse hook."""
+    def setUp(self):
+        super().setUp()
+        self.demo = subprocess.Popen([sys.executable, str(ROOT / "tests" / "demo_app" / "serve.py"), "8097"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.demo.stdout.readline()
+        self.shots = self.tmp / "t1" / "shots"
+        self.shots.mkdir(parents=True)
+        env = dict(os.environ, MT_SHOT_DIR=str(self.shots))
+        self.mcp = subprocess.Popen(
+            [shutil.which("node") or "node", str(ROOT / "runner" / "node_modules" / "@playwright" / "mcp" / "cli.js"),
+             "--isolated", "--headless", "--viewport-size", "1280,800", "--output-dir", str(self.tmp / "t1" / "browser"),
+             "--image-responses", "omit", "--init-page", str(ROOT / "hooks" / "shot_page.js")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, cwd=self.tmp)
+        self.next_id = 0
+        self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                "clientInfo": {"name": "mt-test", "version": "1"}})
+        self.notify("notifications/initialized")
+
+    def tearDown(self):
+        self.mcp.kill()
+        self.mcp.wait()
+        self.demo.terminate()
+        self.demo.wait()
+        super().tearDown()
+
+    def notify(self, method, params=None):
+        self.mcp.stdin.write((json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}}) + "\n").encode())
+        self.mcp.stdin.flush()
+
+    def rpc(self, method, params):
+        self.next_id += 1
+        self.mcp.stdin.write((json.dumps({"jsonrpc": "2.0", "id": self.next_id, "method": method,
+                                          "params": params}) + "\n").encode())
+        self.mcp.stdin.flush()
+        while True:
+            msg = json.loads(self.mcp.stdout.readline())
+            if msg.get("id") == self.next_id:
+                return msg
+
+    def act(self, tool, args):
+        """One browser action as Claude Code runs it: the MCP tool, then the PostToolUse hook."""
+        out = self.rpc("tools/call", {"name": tool, "arguments": args})
+        self.assertNotIn("error", out)
+        payload = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "mcp__playwright__" + tool,
+                              "tool_input": args})
+        subprocess.run([sys.executable, str(ROOT / "hooks" / "shot.py")], input=payload.encode(), check=True,
+                       env=dict(os.environ, MT_SHOT_DIR=str(self.shots)), timeout=30)
+
+    def test_one_full_size_png_per_action(self):
+        self.act("browser_navigate", {"url": "http://localhost:8097/"})
+        self.act("browser_snapshot", {})            # read-only: no screenshot
+        self.act("browser_navigate", {"url": "http://localhost:8097/pricing"})
+        pngs = sorted(self.shots.glob("*.png"))
+        self.assertEqual([p.name.split("-", 1)[1] for p in pngs], ["navigate.png", "navigate.png"])
+        for p in pngs:
+            self.assertEqual(png_size(p), (1280, 800))
+            if POSIX:
+                self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
+            self.assertTrue(p.with_suffix(".json").exists())
+        self.assertEqual(list(self.shots.glob("*.req")) + list(self.shots.glob("*.err")), [])
+
+
+class TestRepeat(Base):
+    def secrets(self, sid):
+        from mtlib.agents.reproducer import read_secrets
+        from mtlib.dispatcher import session_dir
+        return read_secrets(session_dir(self.cfg, sid))
+
+    def test_repeat_reuses_the_saved_login(self):
+        old = self.new_session(username="qa@test", password="s3cret!")
+        self.store.update_session(old, status="done")
+        new = self.new_session(reuse_login_from=old, repeat_of=old)
+        self.assertEqual(self.store.get_session(new)["has_auth"], 1)
+        self.assertEqual(self.secrets(new), {"MT_USERNAME": "qa@test", "MT_PASSWORD": "s3cret!"})
+        self.assertTrue(any(f"repeat of session #{old}" in e["text"] for e in self.store.events(new, 20)))
+
+    def test_typed_credentials_win(self):
+        old = self.new_session(username="qa@test", password="s3cret!")
+        new = self.new_session(reuse_login_from=old, username="other@test", password="n3w!")
+        self.assertEqual(self.secrets(new)["MT_USERNAME"], "other@test")
+
+    def test_no_saved_login(self):
+        old = self.new_session()
+        with self.assertRaises(sessions.FormError):
+            self.new_session(reuse_login_from=old)
+        with self.assertRaises(sessions.FormError):
+            self.new_session(reuse_login_from=9999)
+
+
+# ---------------------------------------------------------------- any OS (Windows, macOS, Linux)
+def pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # a zombie child of ours counts as gone
+    try:
+        return os.waitpid(pid, os.WNOHANG) == (0, 0)
+    except ChildProcessError:
+        return True
+
+
+class TestAnyOS(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mt-os-")).resolve()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_stop_kills_the_whole_process_tree(self):
+        from mtlib.worker import ClaudeRun
+        argv = [Path(sys.executable).as_posix(), (ROOT / "tests" / "fake_tree.py").as_posix()]
+        events = []
+        run = ClaudeRun(argv, "", self.tmp, dict(os.environ), self.tmp / "stream.jsonl", lambda e, r: events.append(e))
+
+        async def go():
+            task = asyncio.create_task(run.run())
+            for _ in range(200):
+                if (self.tmp / "child.pid").exists():
+                    break
+                await asyncio.sleep(0.05)
+            run.stop("cancelled")
+            run_task = await asyncio.wait_for(task, 30)
+            return run_task
+        asyncio.run(go())
+        child = int((self.tmp / "child.pid").read_text(encoding="utf-8"))
+        for _ in range(100):
+            if not pid_alive(child):
+                break
+            time.sleep(0.1)
+        self.assertFalse(pid_alive(child), "the grandchild (think node/chromium) survived the stop")
+
+    def test_program_and_path_arguments_survive_spaces(self):
+        from unittest import mock
+        from mtlib import worker
+        with mock.patch.object(worker.shutil, "which", return_value="C:/Program Files/nodejs/node.exe"):
+            self.assertEqual(worker.program("node"), "node.exe")          # found on PATH by name
+        with mock.patch.object(worker.shutil, "which", return_value="/usr/bin/node"):
+            self.assertEqual(worker.program("node"), "/usr/bin/node")
+        with mock.patch.object(worker.shutil, "which", return_value=None):
+            self.assertEqual(worker.program("node"), "node")
+        spaced = self.tmp / "First Last" / "runs" / "t1"
+        spaced.mkdir(parents=True)
+        arg = worker.rel_arg(spaced / "settings.json", spaced)
+        self.assertEqual(arg, "settings.json")
+        self.assertEqual(checked_argv(["claude", "--settings", arg]), ["claude", "--settings", "settings.json"])
+
+    def test_permission_paths_and_hook_command(self):
+        from mtlib.agents import hook_command, perm_path
+        self.assertEqual(perm_path(r"C:\Users\x\runs\s1"), "/c/Users/x/runs/s1")
+        self.assertEqual(perm_path("D:/a/b"), "/d/a/b")
+        if POSIX:
+            self.assertEqual(perm_path("/srv/mt/runs"), "/srv/mt/runs")
+        cmd = hook_command(ROOT / "hooks" / "guard.py")
+        self.assertIn(Path(sys.executable).resolve().as_posix().split("/")[-1], cmd)
+        self.assertIn("hooks/guard.py", cmd)
+        self.assertNotIn("\\", cmd)
+
+    def test_dotenv_and_data_dir(self):
+        from unittest import mock
+        cfg_file = self.tmp / "config.toml"
+        cfg_file.write_text('[server]\nport = 8799\n', encoding="utf-8")
+        (self.tmp / ".env").write_text("\ufeffexport JIRA_API_TOKEN=from-dotenv\nOTHER=ignored\n", encoding="utf-8")
+        data = self.tmp / "elsewhere"
+        env = {k: v for k, v in os.environ.items() if k not in ("JIRA_API_TOKEN", "MT_DATA_DIR")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = config.load(cfg_file)
+            self.assertEqual(cfg.port, 8799)
+            self.assertEqual(cfg.jira_token, "from-dotenv")
+            self.assertNotIn("OTHER", os.environ)
+            self.assertEqual(cfg.data_dir, self.tmp)
+            os.environ["MT_DATA_DIR"] = str(data)
+            self.assertEqual(config.load(cfg_file).data_dir, data.resolve())
+        with self.assertRaises(ValueError):
+            config.read_toml(self.tmp / "config.txt")
+
+    def test_stop_handlers_install_on_this_os(self):
+        from mtlib.cli import install_stop_handlers
+
+        async def go():
+            stop = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            done = install_stop_handlers(loop, stop)
+            for sig in done:
+                try:
+                    loop.remove_signal_handler(sig)
+                except (NotImplementedError, RuntimeError):
+                    signal.signal(sig, signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL)
+            return done
+        import signal
+        done = asyncio.run(go())
+        self.assertIn(int(signal.SIGINT), done)
+
+    def test_doctor_reports_missing_tools(self):
+        from unittest import mock
+        from mtlib import setup_tools
+        cfg = make_cfg(self.tmp)
+        lines = []
+        with mock.patch.object(setup_tools, "program", side_effect=lambda name: name):
+            rc = setup_tools.doctor(cfg, out=lines.append)
+        self.assertEqual(rc, 1)
+        text = "\n".join(lines)
+        self.assertIn("FIX   node", text)
+        self.assertIn("not found on PATH", text)
+        self.assertRegex(text, r"OK\s+data folder")
+        self.assertTrue(all(l.split()[0] in ("OK", "WARN", "FIX", "MonkeyTesting") or l.endswith(".") for l in lines))
+
+    def test_cli_runs_as_module(self):
+        out = subprocess.run([sys.executable, "-m", "mtlib", "--help"], cwd=ROOT, capture_output=True, text=True,
+                             timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        for cmd in ("serve", "install", "doctor"):
+            self.assertIn(cmd, out.stdout)
+
+
+# ---------------------------------------------------------------- deleting sessions
+ROWS_LEFT = {
+    "tasks": "SELECT COUNT(*) n FROM tasks WHERE session_id = ?",
+    "pages": "SELECT COUNT(*) n FROM pages WHERE session_id = ?",
+    "edges": "SELECT COUNT(*) n FROM edges WHERE session_id = ?",
+    "suspects": "SELECT COUNT(*) n FROM suspects WHERE session_id = ?",
+    "events": "SELECT COUNT(*) n FROM events WHERE session_id = ?",
+    "usage": "SELECT COUNT(*) n FROM usage WHERE session_id = ?",
+    "sessions": "SELECT COUNT(*) n FROM sessions WHERE id = ?",
+}
+
+
+class TestDelete(Base):
+    def rows_left(self, sid):
+        c = self.store.conn
+        left = {t: c.execute(q, (sid,)).fetchone()["n"] for t, q in ROWS_LEFT.items()}
+        return {k: v for k, v in left.items() if v}
+
+    def test_finished_session_leaves_nothing(self):
+        from mtlib import deletion
+        keep = self.new_session()
+        sid = self.new_session(username="qa@test", password="s3cret!")
+        self.run_all()
+        self.assertEqual(self.store.get_session(sid)["status"], "done")
+        folder = self.cfg.runs_dir / f"s{sid}"
+        self.assertTrue((folder / "secrets.env").exists())
+        pre = deletion.preview(self.cfg, self.store, sid)
+        self.assertGreater(pre["events"], 0)
+        self.assertGreater(pre["bytes"], 0)
+        self.assertFalse(pre["running"])
+        out = deletion.request(self.cfg, self.store, sid)
+        self.assertTrue(out["deleted"], out)
+        self.assertEqual(self.rows_left(sid), {})
+        self.assertFalse(folder.exists())
+        self.assertTrue(self.store.get_session(keep))          # other sessions untouched
+        self.assertTrue((self.cfg.runs_dir / f"s{keep}").exists())
+        self.assertEqual(self.store.stats()["sessions"], 1)    # dashboard totals follow
+
+    def test_running_session_is_cancelled_then_deleted(self):
+        from mtlib import deletion
+        os.environ["FAKE_CLAUDE_MODE"] = "slow"
+        sid = self.new_session()
+        disp = Dispatcher(self.cfg, self.store, repro_fn=fake_repro, tick_s=0.05)
+
+        async def go():
+            end = time.time() + 30
+            while time.time() < end:
+                disp.tick()
+                if any(t["kind"] == "test" and t["status"] == "running" for t in self.store.tasks_for(sid)):
+                    break
+                await asyncio.sleep(0.05)
+            out = deletion.request(self.cfg, self.store, sid)
+            self.assertEqual(out["state"], "cancelling")
+            end = time.time() + 30
+            while time.time() < end and self.store.get_session(sid):
+                disp.tick()
+                await asyncio.sleep(0.05)
+            return disp
+        disp = asyncio.run(go())
+        self.assertIsNone(self.store.get_session(sid))
+        self.assertEqual(self.rows_left(sid), {})
+        self.assertFalse(disp.running, "a worker was left running")
+        self.assertFalse((self.cfg.runs_dir / f"s{sid}").exists())
+
+    def test_ids_that_escape_runs_are_refused(self):
+        from mtlib import deletion
+        for bad in (0, -1, "../1", True):
+            with self.assertRaises(ValueError):
+                deletion.run_folder(self.cfg, bad)
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "precious.txt").write_text("keep me", encoding="utf-8")
+        sid = self.new_session()
+        link = self.cfg.runs_dir / f"s{sid}"
+        shutil.rmtree(link)
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("this OS/user can't create symlinks")
+        with self.assertRaises(ValueError):
+            deletion.request(self.cfg, self.store, sid)
+        self.assertTrue((outside / "precious.txt").exists())
+        self.assertTrue(self.store.get_session(sid))
+
+    def test_read_only_files_are_deleted(self):
+        from mtlib import deletion
+        sid = self.new_session()
+        self.store.update_session(sid, status="done")
+        folder = self.cfg.runs_dir / f"s{sid}"
+        clone = folder / "t9" / "clone" / ".git" / "objects"
+        clone.mkdir(parents=True)
+        for i in range(3):
+            f = clone / f"pack{i}.idx"
+            f.write_bytes(b"x" * 100)
+            os.chmod(f, stat.S_IREAD)
+        os.chmod(clone, stat.S_IREAD | stat.S_IEXEC)
+        self.assertTrue(deletion.request(self.cfg, self.store, sid)["deleted"])
+        self.assertFalse(folder.exists())
+
+    def test_incomplete_delete_keeps_rows(self):
+        from unittest import mock
+        from mtlib import deletion
+        sid = self.new_session(username="qa@test", password="s3cret!")
+        self.store.update_session(sid, status="cancelled")
+        self.assertTrue((self.cfg.runs_dir / f"s{sid}" / "secrets.env").exists())
+        with mock.patch.object(deletion, "remove_tree", return_value=["/locked/file"]):
+            out = deletion.request(self.cfg, self.store, sid)
+        self.assertEqual(out["state"], "incomplete")
+        self.assertEqual(self.store.get_session(sid)["delete_state"], "incomplete")
+        self.assertFalse((self.cfg.runs_dir / f"s{sid}" / "secrets.env").exists())
+        self.assertTrue(deletion.request(self.cfg, self.store, sid)["deleted"])   # retry works
+
+    def test_filters(self):
+        from mtlib import deletion
+        old, new, running = self.new_session(), self.new_session(), self.new_session()
+        now = time.time()
+        self.store.update_session(old, status="done", finished_at=now - 40 * 86400)
+        self.store.update_session(new, status="cancelled", finished_at=now - 3600)
+        self.store.update_session(running, status="running")
+        ids = lambda rows: sorted(int(r["id"]) for r in rows)
+        self.assertEqual(ids(deletion.matching(self.store, 30 * 86400)), [old])
+        self.assertEqual(ids(deletion.matching(self.store, None, "finished")), [old, new])
+        self.assertEqual(ids(deletion.matching(self.store, None, "cancelled")), [new])
+
+    def test_cli(self):
+        from mtlib import cli
+        a, b = self.new_session(), self.new_session()
+        self.store.update_session(a, status="done", finished_at=time.time() - 90 * 86400)
+        self.store.update_session(b, status="done", finished_at=time.time())
+        cfg_file = self.tmp / "config.toml"
+        cfg_file.write_text(f"[paths]\ndata_dir = {json.dumps(Path(self.tmp).as_posix())}\n", encoding="utf-8")
+        from unittest import mock
+        with mock.patch("builtins.input", return_value="n"):
+            self.assertEqual(cli.main(["--config", str(cfg_file), "delete", str(a)]), 1)   # answered no
+        self.assertTrue(self.store.get_session(a))
+        self.assertEqual(cli.main(["--config", str(cfg_file), "delete", "--older-than", "30d", "--yes"]), 0)
+        self.assertIsNone(self.store.get_session(a))
+        self.assertTrue(self.store.get_session(b))
+        self.assertEqual(cli.main(["--config", str(cfg_file), "delete", "999", "--yes"]), 1)
+
+
+class TestDeleteApi(TestServer):
+    def call(self, method, path, body=None, headers=None):
+        h = {"X-MT": "1", "Content-Type": "application/json"}
+        h.update(headers or {})
+        r = urllib.request.Request(self.base + path, data=json.dumps(body).encode() if body is not None else None,
+                                   headers=h, method=method)
+        code, raw = fetch(r)
+        return code, json.loads(raw or b"null")
+
+    def test_preview_delete_and_bulk(self):
+        a, b, c = (self.new_session() for _ in range(3))
+        for sid in (a, b, c):
+            self.store.update_session(sid, status="done")
+        code, pre = self.call("GET", f"/api/sessions/{a}/delete-preview")
+        self.assertEqual(code, 200)
+        self.assertEqual(pre["session"]["id"], a)
+        self.assertIn("bytes", pre)
+        self.assertEqual(self.call("DELETE", f"/api/sessions/{a}", headers={"X-MT": "0"})[0], 403)
+        self.assertEqual(self.call("DELETE", f"/api/sessions/{a}", headers={"Origin": "http://evil.test"})[0], 403)
+        code, out = self.call("DELETE", f"/api/sessions/{a}")
+        self.assertEqual((code, out["deleted"]), (200, True))
+        self.assertEqual(self.call("DELETE", f"/api/sessions/{a}")[0], 404)
+        code, out = self.call("POST", "/api/sessions/delete", {"ids": [b, c, 9999]})
+        self.assertEqual((code, out["deleted"]), (200, 2))
+        self.assertEqual(self.call("POST", "/api/sessions/delete", {"ids": "1"})[0], 400)
+        self.assertEqual(self.store.stats()["sessions"], 0)
 
 
 if __name__ == "__main__":

@@ -288,12 +288,24 @@ class Dispatcher:
             self.running.pop(tid)
         for s in self.store.list_sessions(200, statuses=("queued", "running", "reporting")):
             self.advance(s)
+        self.finish_deletes()
         while len(self.running) < self.max_workers:
             task = self.store.claim_next()
             if not task:
                 break
             ex = TaskExecution(self, task, self.free_slot())
             self.running[int(task["id"])] = (asyncio.get_running_loop().create_task(ex.execute()), ex)
+
+    def finish_deletes(self) -> None:
+        """'Cancel & delete': once a cancelled session has no worker left, delete it with its files."""
+        from . import deletion
+        for s in self.store.list_sessions(500, statuses=("cancelled", "done", "failed")):
+            if s.get("delete_state") == "requested" and not self._running_for(int(s["id"])):
+                try:
+                    deletion.delete_session(self.cfg, self.store, int(s["id"]))
+                except (OSError, ValueError, KeyError) as e:
+                    log.warning("delete of session %s failed: %s", s["id"], e)
+                    self.store.update_session(int(s["id"]), delete_state="incomplete")
 
     def _running_for(self, sid: int, kinds=None) -> list[TaskExecution]:
         return [ex for _, ex in self.running.values()

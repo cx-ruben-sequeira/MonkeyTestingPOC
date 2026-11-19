@@ -5,3 +5,8 @@ logs/
 __pycache__/
 *.pyc
 .checkmarx/
+.env
+*.egg-info/
+build/
+dist/
+.venv/

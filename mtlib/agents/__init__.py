@@ -8,21 +8,23 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
-import shutil
 import string
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from ..config import ROOT, Config
+from ..proc import python
 from ..store import Store
-from ..worker import BROWSER_PREFIX, RunResult, checked_argv, short
+from ..worker import BROWSER_PREFIX, RunResult, checked_argv, fwd, program, quote_safe, rel_arg, short
 
 PROMPTS = Path(__file__).resolve().parent / "prompts"
 GUARD_HOOK = ROOT / "hooks" / "guard.py"
+SHOT_HOOK = ROOT / "hooks" / "shot.py"          # PostToolUse: asks for a screenshot after each action
+SHOT_PAGE = ROOT / "hooks" / "shot_page.js"     # Playwright MCP --init-page: takes it
 
 # Browser tools that can run arbitrary code or touch the local disk stay off for every role.
 BROWSER_DENY = [BROWSER_PREFIX + n for n in ("evaluate", "run_code", "run_code_unsafe", "file_upload", "install", "tabs")]
@@ -52,6 +54,37 @@ def load_prompt(name: str) -> str:
 def render(name: str, **values) -> str:
     """Prompt file with $placeholders filled; JSON braces in the files are left alone."""
     return string.Template(load_prompt(name)).safe_substitute(**values)
+
+
+def hook_command(script) -> str:
+    """Hook command for a worker's settings JSON: the absolute interpreter plus the script, both with
+    forward slashes. Never a bare script name: Windows ignores shebangs."""
+    exe, path = Path(python()).as_posix(), fwd(script)
+    if os.name == "nt":
+        # double quotes work in both cmd.exe and Git Bash (Windows paths can't contain a double quote)
+        return f'"{exe}" "{path}"'
+    return f"{shlex.quote(exe)} {shlex.quote(path)}"
+
+
+def command_arg(arg: str, cwd, is_program: bool) -> str:
+    """One part of the configured claude command: the program as program() gives it (file name when its
+    path has spaces), absolute script paths relative to the working folder, anything else unchanged."""
+    if is_program:
+        if os.path.isabs(arg):
+            full = fwd(arg)
+            return full if quote_safe(full) else os.path.basename(arg)
+        return program(arg)
+    return rel_arg(arg, cwd) if os.path.isabs(arg) else arg
+
+
+def perm_path(path) -> str:
+    """An absolute path in the form Claude Code permission rules match on every OS: POSIX slashes, and a
+    Windows drive written as /c/... (C:\\Users\\x -> /c/Users/x). Use it as Read(/<perm_path>/**)."""
+    raw = os.fspath(path)
+    if re.match(r"^[A-Za-z]:[\\/]", raw):   # a Windows drive path (also testable on POSIX)
+        p = raw.replace("\\", "/")
+        return "/" + p[0].lower() + p[2:]
+    return fwd(raw)
 
 
 def origin_of(url: str) -> str:
@@ -92,6 +125,13 @@ class Agent:
     @property
     def browser_dir(self) -> Path:
         return self.ctx.task_dir / "browser"
+
+    @property
+    def shots_dir(self) -> Path | None:
+        """runs/s<sid>/t<tid>/shots when the session takes a screenshot after every browser action."""
+        if self.uses_browser and self.srow.get("shots_every_action"):
+            return self.ctx.task_dir / "shots"
+        return None
 
     def allow(self) -> list[str]:
         rules = ["Read(./**)"]
@@ -206,26 +246,33 @@ class Agent:
         d = self.ctx.task_dir
         d.mkdir(parents=True, exist_ok=True)
         self.browser_dir.mkdir(parents=True, exist_ok=True)
-        hook = f"{shlex.quote(sys.executable)} {shlex.quote(str(GUARD_HOOK))}"
         settings = {
             "permissions": {"allow": self.allow(), "deny": self.deny()},
             "hooks": {"PreToolUse": [{"matcher": "mcp__playwright__browser_.*",
-                                      "hooks": [{"type": "command", "command": hook}]}]},
+                                      "hooks": [{"type": "command", "command": hook_command(GUARD_HOOK)}]}]},
         }
+        if self.shots_dir:
+            self.shots_dir.mkdir(parents=True, exist_ok=True)
+            settings["hooks"]["PostToolUse"] = [{"matcher": "mcp__playwright__browser_.*",
+                                                 "hooks": [{"type": "command", "command": hook_command(SHOT_HOOK),
+                                                            "timeout": 15}]}]
         files = {"settings.json": json.dumps(settings, indent=1),
                  "append.txt": render("_system", **self.common_values())}
         if self.uses_browser:
             files["mcp.json"] = json.dumps(self.mcp_config(), indent=1)
         for name, content in files.items():
             write_in(d, name, content)
-        cmd = [*self.cfg.claude_cmd, "-p", "--output-format", "stream-json", "--verbose",
-               "--permission-mode", "dontAsk", "--settings", str(d / "settings.json"),
-               "--append-system-prompt-file", str(d / "append.txt"), "--strict-mcp-config",
+        # paths relative to the run's working folder: a home folder with spaces never reaches the command line
+        here = self.cwd
+        claude = [command_arg(c, here, i == 0) for i, c in enumerate(self.cfg.claude_cmd)]
+        cmd = [*claude, "-p", "--output-format", "stream-json", "--verbose",
+               "--permission-mode", "dontAsk", "--settings", rel_arg(d / "settings.json", here),
+               "--append-system-prompt-file", rel_arg(d / "append.txt", here), "--strict-mcp-config",
                "--setting-sources", "project",  # no user hooks, plugins or allow rules leak into workers
                "--tools", self.builtin_tools, "--no-session-persistence",
                "--name", f"mt-s{self.sid}-t{self.tid}-{self.kind}"]
         if self.uses_browser:
-            cmd += ["--mcp-config", str(d / "mcp.json")]
+            cmd += ["--mcp-config", rel_arg(d / "mcp.json", here)]
         if self.cfg.model:
             cmd += ["--model", self.cfg.model]
         if self.cfg.effort:
@@ -235,9 +282,8 @@ class Agent:
         return checked_argv(cmd), self.prompt()
 
     def mcp_config(self) -> dict:
-        node = shutil.which("node") or "node"
         viewport = self.srow["viewport"] or self.cfg.viewport
-        args = [str(self.cfg.mcp_cli), "--isolated", "--output-dir", str(self.browser_dir),
+        args = [fwd(self.cfg.mcp_cli), "--isolated", "--output-dir", fwd(self.browser_dir),
                 "--allowed-origins", ";".join(self.allowed_origins()),
                 "--viewport-size", viewport.replace("x", ","),
                 "--timeout-action", str(self.cfg.action_timeout_ms), "--console-level", "warning",
@@ -249,25 +295,34 @@ class Agent:
             args += ["--browser", browser]
         secrets = self.ctx.session_dir / "secrets.env"
         if secrets.exists():
-            args += ["--secrets", str(secrets)]
-        return {"mcpServers": {"playwright": {"command": node, "args": args}}}
+            args += ["--secrets", fwd(secrets)]
+        server = {"command": program("node"), "args": args}
+        if self.shots_dir:
+            args += ["--init-page", fwd(SHOT_PAGE)]
+            server["env"] = {"MT_SHOT_DIR": fwd(self.shots_dir)}
+        return {"mcpServers": {"playwright": server}}
 
     def env(self) -> dict:
-        return {"MT_GUARD_FILE": str(self.ctx.session_dir / "guard.json"),
-                "MT_BLOCK_LOG": str(self.ctx.session_dir / "blocked.log"),
-                "MT_STOP_FILE": str(self.ctx.task_dir / "stop.flag")}
+        """Paths the hooks read, with forward slashes (Python accepts them on Windows too)."""
+        return {"MT_GUARD_FILE": fwd(self.ctx.session_dir / "guard.json"),
+                "MT_BLOCK_LOG": fwd(self.ctx.session_dir / "blocked.log"),
+                "MT_STOP_FILE": fwd(self.ctx.task_dir / "stop.flag"),
+                **({"MT_SHOT_DIR": fwd(self.shots_dir)} if self.shots_dir else {})}
 
 
 def _s(v, n: int):
     return str(v)[:n] if v not in (None, "") else None
 
 
-def write_in(directory, name: str, content: str) -> Path:
+def write_in(directory, name: str, content: str, mode: int = 0o600) -> Path:
+    """Writes `name` inside `directory` only (UTF-8), owner read/write unless a mode is given."""
     base = os.path.normpath(os.path.abspath(os.fspath(directory)))
     path = os.path.normpath(os.path.abspath(os.path.join(base, name)))
     if os.path.dirname(path) != base:
         raise ValueError(f"Refusing to write outside {base}: {path}")
-    with open(path, "w", encoding="utf-8") as fh:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    os.chmod(path, mode)  # O_CREAT honours the umask, and an existing file keeps its old mode
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(content)
     return Path(path)
 
@@ -281,4 +336,4 @@ def make(ctx: Context) -> Agent:
     return kinds[ctx.task["kind"]](ctx)
 
 
-__all__ = ["Agent", "Context", "make", "render", "origin_of", "short", "write_in"]
+__all__ = ["Agent", "Context", "make", "render", "origin_of", "short", "write_in", "hook_command"]

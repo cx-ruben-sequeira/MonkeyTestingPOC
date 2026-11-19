@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monkeytesting"
+version = "0.2.0"
+description = "Autonomous exploratory QA: Claude workers explore a QA/staging web app and prove bugs N times."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []          # Python standard library only
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+# `pipx install -e .` (or `uv tool install -e .`) puts `mt` on PATH on every OS (mt.exe on Windows).
+mt = "mtlib.cli:main"
+
+[tool.setuptools]
+packages = ["mtlib", "mtlib.agents"]
+
+[tool.setuptools.package-data]
+"mtlib.agents" = ["prompts/*.md"]

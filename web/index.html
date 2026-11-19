@@ -37,6 +37,9 @@ button.primary:hover { filter: brightness(1.08); }
 button.danger { color: var(--bad); }
 button.confirm { background: var(--bad); color: #fff; border-color: var(--bad); }
 button.small { padding: 2px 8px; font-size: 12px; }
+a.button { display: inline-block; text-decoration: none; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 5px 12px; }
+a.button:hover { background: var(--soft); }
+a.button.small { padding: 2px 8px; font-size: 12px; }
 button.icon { border: none; background: transparent; font-size: 20px; line-height: 1; padding: 2px 6px; color: var(--muted); }
 input, textarea, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 7px 10px; width: 100%; }
 input[type=checkbox], input[type=radio] { width: auto; }
@@ -113,9 +116,17 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.t th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
 table.t td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 table.t tr.click { cursor: pointer; }
+#dashSessions { overflow-x: auto; }
 table.t tr.click:hover td { background: var(--soft); }
 .ell { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 20; display: none; }
+.modal-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 40; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); width: min(520px, 100%); max-height: 90vh; overflow: auto; padding: 18px 20px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.modal h3 { font-size: 16px; margin: 0 0 10px; }
+.modal ul { margin: 6px 0 10px; padding-left: 20px; }
+.modal .actions { justify-content: flex-end; margin-top: 14px; }
+.bulkbar { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 8px; background: var(--soft); border-radius: var(--radius); }
+table.t td.sel, table.t th.sel { width: 26px; padding-right: 0; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 100%); background: var(--surface); z-index: 21; overflow-y: auto; padding: 18px 22px 40px; box-shadow: -8px 0 30px rgba(0,0,0,.2); display: none; }
 .drawer.open, .drawer-back.open { display: block; }
 .drawer video { width: 100%; border-radius: 8px; background: #000; margin: 8px 0; }
@@ -170,6 +181,7 @@ table.t tr.click:hover td { background: var(--soft); }
       <div class="card"><div class="section-head"><h2>Workers now</h2><span class="muted small" id="dashQueue"></span></div><div id="dashWorkers"></div></div>
     </div>
     <div class="card"><div class="section-head"><h2>Recent sessions</h2><button class="primary small" data-go="new">New session</button></div>
+      <div id="bulkBar" class="bulkbar hide"><span id="bulkCount"></span><button class="danger small" id="bulkDel">Delete selected</button><button class="small" id="bulkClear">Clear selection</button></div>
       <div id="dashSessions"></div></div>
   </section>
 
@@ -178,6 +190,7 @@ table.t tr.click:hover td { background: var(--soft); }
     <div class="card">
       <div class="section-head"><h2>New test session</h2><span class="muted small">Minimal path: URL → mode → duration → Start</span></div>
       <form id="newForm" class="grid" autocomplete="off">
+        <div id="repeatBanner" class="banner full hide"></div>
         <label class="f full">Application URL (QA / staging)
           <input name="url" type="url" required placeholder="https://staging.myapp.com" id="fUrl"></label>
         <div id="hostWarn" class="banner full hide"></div>
@@ -195,9 +208,11 @@ table.t tr.click:hover td { background: var(--soft); }
             <label class="f">Login URL<input name="login_url" type="url" placeholder="optional"></label>
             <label class="f">User / email<input name="username" autocomplete="off"></label>
             <label class="f">Password<input name="password" type="password" autocomplete="new-password"><span class="hint">kept in a local 0600 file, masked in logs, never sent to Claude</span></label>
+            <label class="check hide" id="reuseRow" style="grid-column:1/-1"><input type="checkbox" name="reuse_login" checked> <span id="reuseText"></span></label>
             <label class="f" style="grid-column:1/-1">Extra allowed origins<input name="extra_origins" placeholder="https://auth.staging.myapp.com (space separated)"></label>
             <label class="f" style="grid-column:1/-1">Instructions and constraints<textarea name="instructions" rows="3" placeholder="e.g. Focus on checkout. Don't touch /admin. Use test card 4242…"></textarea></label>
           </div></details>
+        <label class="check full"><input type="checkbox" name="shots_every_action"> <span>Screenshot every action. Saves a screenshot at the viewport's normal resolution after each browser action. When the session ends you can download them all as a zip.</span></label>
         <label class="check full"><input type="checkbox" name="allow_destructive"> <span>Allow destructive actions (delete, pay, send, transfer…). Off by default: a guard blocks them.</span></label>
         <label class="check full hide" id="confirmRow"><input type="checkbox" name="confirm_non_test"> <span><b>This is a test environment.</b> I understand the agents will click, type and submit forms here.</span></label>
         <div class="full actions"><button class="primary" type="submit" id="startBtn">Start session</button><span class="muted small" id="newMsg"></span></div>
@@ -208,7 +223,7 @@ table.t tr.click:hover td { background: var(--soft); }
   <!-- Live monitor -->
   <section id="tab-live" class="hide">
     <div class="section-head"><div class="actions"><h2>Session</h2><select id="liveSel" style="width:auto;min-width:280px"></select></div>
-      <div class="actions"><span id="liveStatus"></span><button class="danger small" id="cancelBtn">Cancel session</button></div></div>
+      <div class="actions"><span id="liveStatus"></span><span class="muted small" id="shotInfo"></span><a class="button small hide" id="shotDl" href="#" download>Download screenshots (.zip)</a><button class="small hide" id="repeatBtn" title="Open New session with this session's settings">↻ Repeat session</button><button class="danger small" id="cancelBtn">Cancel session</button><button class="danger small" id="deleteBtn">Delete session</button></div></div>
     <div id="liveEmpty" class="empty hide">No sessions yet. Start one from New session.</div>
     <div id="liveBody">
       <div class="two">
@@ -247,7 +262,7 @@ table.t tr.click:hover td { background: var(--soft); }
   <!-- Report -->
   <section id="tab-report" class="hide">
     <div class="section-head"><div class="actions"><h2>Report</h2><select id="repSel" style="width:auto;min-width:280px"></select></div>
-      <a id="repDl" class="small" href="#">Download Markdown</a></div>
+      <div class="actions"><a id="repShotDl" class="small hide" href="#" download>Download screenshots (.zip)</a><a id="repDl" class="small" href="#">Download Markdown</a></div></div>
     <div class="two">
       <div class="card"><h3>Coverage</h3><div id="repCov"></div></div>
       <div class="card"><h3>Severity distribution</h3><div class="sevbars" id="repSev"></div></div>
@@ -257,6 +272,7 @@ table.t tr.click:hover td { background: var(--soft); }
 </main>
 
 <div class="drawer-back" id="drawerBack"></div>
+<div class="modal-back hide" id="modalBack" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal" id="modal"></div></div>
 <aside class="drawer" id="drawer" aria-label="Bug detail"></aside>
 
 <script>
@@ -273,8 +289,8 @@ const TEST_HOST = /(^|[.\-])(staging|stage|stg|qa|test|testing|dev|develop|sandb
 let S = {state: null, bugs: [], tab: 'dash', sel: null, mode: 'hybrid', report: {}, jiraArm: null};
 try { S.tab = localStorage.getItem('mt.tab') || 'dash'; S.sel = +localStorage.getItem('mt.sel') || null; } catch (e) {}
 
-async function api(path, body) {
-  const opt = body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-MT': '1'}, body: JSON.stringify(body)};
+async function api(path, body, method) {
+  const opt = body === undefined && !method ? {} : {method: method || 'POST', headers: {'Content-Type': 'application/json', 'X-MT': '1'}, body: body === undefined ? undefined : JSON.stringify(body)};
   const r = await fetch(path, opt);
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
@@ -285,6 +301,8 @@ const ago = ts => { if (!ts) return ''; const s = Date.now() / 1000 - ts; return
 const clock = ts => new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
 const mins = s => s < 60 ? Math.max(0, Math.round(s)) + 's' : Math.round(s / 60) + ' min';
 const statusPill = s => { const c = {running: 'accent', reporting: 'accent', queued: '', done: 'ok', cancelled: 'warn', failed: 'bad'}[s] || ''; return `<span class="pill ${c}">${esc(s)}</span>`; };
+const deletePill = d => !d ? '' : d === 'incomplete' ? ' <span class="pill bad" title="Some files could not be removed. Delete again to retry.">delete incomplete</span>'
+  : ` <span class="pill warn">${d === 'requested' ? 'cancelling, then deleting' : 'deleting'}</span>`;
 const sevPill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
 const kindLabel = {explore: 'Explorer', test: 'Tester', repro: 'Reproducer', report: 'Reporter'};
 
@@ -361,11 +379,13 @@ function renderDash() {
   $('#dashSev').innerHTML = sevBars(x.by_severity);
   $('#dashQueue').textContent = `${st.workers.length} / ${st.max_workers} slots · ${st.queued} queued`;
   $('#dashWorkers').innerHTML = st.workers.length ? st.workers.map(w => `<div class="item"><div class="main"><div class="t"><b>${kindLabel[w.kind] || w.kind}</b> · s#${w.session_id} ${esc(w.title)}</div><div class="small muted t">${esc(w.current_action || w.step_name || '')}</div></div><div class="side small muted">${w.actions} actions</div></div>`).join('') : '<div class="empty">All workers idle.</div>';
-  $('#dashSessions').innerHTML = st.sessions.length ? `<table class="t"><tr><th>#</th><th>App</th><th>Mode</th><th>Status</th><th>Bugs</th><th>Suspects</th><th>Pages</th><th>Actions</th><th>Started</th></tr>` +
-    st.sessions.slice(0, 15).map(s => `<tr class="click" data-sid="${s.id}"><td>${s.id}</td><td class="ell">${esc(s.name || s.url)}<div class="small muted ell">${esc(s.url)}</div></td><td>${esc(s.mode)}</td><td>${statusPill(s.status)}</td><td><b>${s.bugs}</b></td><td>${s.suspects}</td><td>${s.pages_visited}/${s.pages_total}</td><td>${s.actions_used}/${s.max_actions}</td><td class="muted">${ago(s.started_at || s.created_at)}</td></tr>`).join('') + '</table>'
+  S.picked = new Set([...(S.picked || [])].filter(id => st.sessions.some(s => s.id === id)));
+  $('#dashSessions').innerHTML = st.sessions.length ? `<table class="t"><tr><th class="sel"><input type="checkbox" id="pickAll" aria-label="Select all sessions" ${S.picked.size && S.picked.size === st.sessions.slice(0, 15).length ? 'checked' : ''}></th><th>#</th><th>App</th><th>Mode</th><th>Status</th><th>Bugs</th><th>Suspects</th><th>Pages</th><th>Actions</th><th>Started</th><th></th></tr>` +
+    st.sessions.slice(0, 15).map(s => `<tr class="click" data-sid="${s.id}"><td class="sel"><input type="checkbox" data-pick="${s.id}" aria-label="Select session #${s.id}" ${S.picked.has(s.id) ? 'checked' : ''}></td><td>${s.id}</td><td class="ell">${esc(s.name || s.url)}<div class="small muted ell">${esc(s.url)}</div></td><td>${esc(s.mode)}</td><td>${statusPill(s.status)}${deletePill(s.delete_state)}</td><td><b>${s.bugs}</b></td><td>${s.suspects}</td><td>${s.pages_visited}/${s.pages_total}</td><td>${s.actions_used}/${s.max_actions}</td><td class="muted">${ago(s.started_at || s.created_at)}</td><td class="actions" style="flex-wrap:nowrap">${ACTIVE.includes(s.status) ? '' : `<button class="small" data-repeat="${s.id}" title="Open New session with these settings">↻ Repeat</button>`}${s.delete_state === 'requested' || s.delete_state === 'deleting' ? '' : `<button class="small danger" data-del="${s.id}" title="${ACTIVE.includes(s.status) ? 'Cancel this session, then delete it' : 'Delete this session with all its data and files'}">🗑 ${ACTIVE.includes(s.status) ? 'Cancel & delete' : 'Delete'}</button>`}</td></tr>`).join('') + '</table>'
     : '<div class="empty">No sessions yet. Start one: give a QA/staging URL, pick a mode and a duration.</div>';
+  renderBulk();
 }
-$('#dashSessions').addEventListener('click', e => { const r = e.target.closest('tr[data-sid]'); if (r) { selectSession(r.dataset.sid); setTab('live'); } });
+$('#dashSessions').addEventListener('click', e => { if (e.target.closest('[data-repeat],[data-del],input,td.sel')) return; const r = e.target.closest('tr[data-sid]'); if (r) { selectSession(r.dataset.sid); setTab('live'); } });
 
 // ---------------------------------------------------------------- New session
 $('#modeSeg').addEventListener('click', e => { const b = e.target.closest('button[data-mode]'); if (!b) return; S.mode = b.dataset.mode; $$('#modeSeg button').forEach(x => x.classList.toggle('on', x === b)); $('#modeHint').textContent = MODE_HINT[S.mode]; });
@@ -380,16 +400,115 @@ function checkHost() {
 $('#newForm').addEventListener('submit', async e => {
   e.preventDefault();
   const f = new FormData(e.target), body = Object.fromEntries(f.entries());
-  body.mode = S.mode; body.allow_destructive = f.has('allow_destructive'); body.confirm_non_test = f.has('confirm_non_test');
+  body.mode = S.mode; body.allow_destructive = f.has('allow_destructive'); body.shots_every_action = f.has('shots_every_action'); body.confirm_non_test = f.has('confirm_non_test');
+  delete body.reuse_login;
+  if (S.repeat) { body.repeat_of = S.repeat.id; if (S.repeat.has_auth && f.has('reuse_login') && !body.username && !body.password) body.reuse_login_from = S.repeat.id; }
   $('#startBtn').disabled = true; $('#newMsg').textContent = 'Starting…';
   try {
     const out = await api('/api/sessions', body);
     e.target.querySelector('[name=password]').value = '';
     $('#newMsg').textContent = '';
+    clearRepeat();
     selectSession(out.id); setTab('live');
   } catch (err) { $('#newMsg').textContent = err.message; }
   finally { $('#startBtn').disabled = false; }
 });
+
+// ---------------------------------------------------------------- Repeat a session
+const ACTIVE = ['queued', 'running', 'reporting'];
+document.addEventListener('click', e => { const b = e.target.closest('[data-repeat]'); if (b) repeatSession(+b.dataset.repeat); });
+$('#repeatBtn').addEventListener('click', () => { const s = S.state?.selected?.session; if (s) repeatSession(s.id); });
+async function repeatSession(id) {
+  let s;
+  try { s = (await api('/api/state?session=' + id)).selected?.session; } catch (e) { showErr(e.message); return; }
+  if (!s) { showErr(`Session #${id} not found`); return; }
+  const f = $('#newForm'), set = (n, v) => { f.elements[n].value = v ?? ''; };
+  f.reset();
+  set('url', s.url); set('duration_min', s.duration_min); set('max_actions', s.max_actions); set('repeat_count', s.repeat_count);
+  set('browser', s.browser || 'chromium'); set('viewport', s.viewport || '1280x800');
+  set('name', s.name && s.name !== new URL(s.url).host ? s.name : ''); set('login_url', s.login_url);
+  const loginOrigin = s.login_url ? new URL(s.login_url).origin.toLowerCase() : '';
+  set('extra_origins', (s.allowed_origins || []).filter(o => o && o !== loginOrigin).join(' '));
+  set('instructions', s.instructions);
+  f.elements.shots_every_action.checked = !!s.shots_every_action;
+  f.elements.allow_destructive.checked = !!s.allow_destructive;
+  f.elements.confirm_non_test.checked = false;   // always re-confirmed by hand
+  ($(`#modeSeg button[data-mode="${s.mode}"]`) || $('#modeSeg button[data-mode="hybrid"]')).click();
+  S.repeat = {id: s.id, has_auth: !!s.has_auth};
+  $('#reuseRow').classList.toggle('hide', !s.has_auth);
+  $('#reuseText').textContent = `Reuse the saved login of session #${s.id} (leave User / Password empty, or type new ones to replace it)`;
+  const advanced = (s.browser && s.browser !== 'chromium') || (s.viewport && s.viewport !== '1280x800') || s.login_url || s.has_auth || s.instructions || (s.allowed_origins || []).length;
+  f.querySelector('details').open = !!advanced;
+  $('#repeatBanner').innerHTML = `<b>Repeating session #${s.id}</b> (${esc(s.name || s.url)}): its settings are filled in below. Change anything you like, then click Start session. <a href="#" id="repeatClear">Start from a blank form</a>`;
+  $('#repeatBanner').classList.remove('hide');
+  $('#newMsg').textContent = '';
+  checkHost(); setTab('new'); f.elements.url.focus();
+}
+function clearRepeat() {
+  S.repeat = null; $('#repeatBanner').classList.add('hide'); $('#reuseRow').classList.add('hide');
+}
+document.addEventListener('click', e => {
+  if (e.target.id !== 'repeatClear') return;
+  e.preventDefault(); clearRepeat(); $('#newForm').reset(); $('#modeSeg button[data-mode="hybrid"]').click(); checkHost();
+});
+
+// ---------------------------------------------------------------- Delete sessions
+const fmtBytes = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB';
+function closeModal() { $('#modalBack').classList.add('hide'); $('#modal').innerHTML = ''; S.modalIds = null; }
+$('#modalBack').addEventListener('click', e => { if (e.target.id === 'modalBack' || e.target.closest('[data-close]')) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modalBack').classList.contains('hide')) closeModal(); });
+async function askDelete(ids) {
+  // click 1: show exactly what will go; click 2 (the Delete button in the dialog) deletes
+  let previews;
+  try { previews = await Promise.all(ids.map(id => api(`/api/sessions/${id}/delete-preview`))); } catch (e) { showErr(e.message); return; }
+  const sum = k => previews.reduce((a, p) => a + (p[k] || 0), 0);
+  const running = previews.filter(p => p.running), keys = previews.flatMap(p => p.jira_keys || []);
+  const one = previews.length === 1 ? previews[0].session : null;
+  S.modalIds = ids;
+  $('#modal').innerHTML = `<h3 id="modalTitle">${one ? `Delete session #${one.id}?` : `Delete ${previews.length} sessions?`}</h3>
+    ${one ? `<div class="small muted ell">${esc(one.name || one.url)}</div>` : `<div class="small muted">${previews.map(p => '#' + p.session.id).join(', ')}</div>`}
+    <p style="margin:12px 0 4px">This removes:</p>
+    <ul class="small"><li><b>${sum('bugs')}</b> bugs and <b>${sum('suspects')}</b> suspects</li><li><b>${sum('events')}</b> events and <b>${sum('tasks')}</b> worker runs</li>
+      <li><b>${fmtBytes(sum('bytes'))}</b> on disk: videos, screenshots, specs, logs and saved credentials</li></ul>
+    ${running.length ? `<div class="banner small">${running.length === previews.length && one ? 'This session is still running: it is cancelled first and deleted once its workers stop.' : `${running.length} of these are still running: they are cancelled first and deleted once their workers stop.`}</div>` : ''}
+    ${keys.length ? `<p class="small">Jira tickets are not deleted and stay in Jira: ${keys.map(esc).join(', ')}</p>` : ''}
+    <p class="small"><b>This cannot be undone.</b></p>
+    <div class="actions"><button class="small" data-close>Keep</button><button class="confirm" id="confirmDel">${running.length ? 'Cancel & delete' : 'Delete'}</button></div>`;
+  $('#modalBack').classList.remove('hide');
+  $('#confirmDel').focus();
+  $('#confirmDel').onclick = async () => {
+    $('#confirmDel').disabled = true; $('#confirmDel').textContent = 'Deleting…';
+    try {
+      const out = ids.length === 1 ? {results: [await api(`/api/sessions/${ids[0]}`, undefined, 'DELETE')]} : await api('/api/sessions/delete', {ids});
+      const left = out.results.filter(r => r.state === 'incomplete');
+      ids.forEach(id => S.picked && S.picked.delete(id));
+      if (out.results.some(r => r.deleted && r.id === S.sel)) { S.sel = null; try { localStorage.removeItem('mt.sel'); } catch (e) {} }
+      closeModal();
+      if (left.length) showErr(`Delete incomplete for #${left.map(r => r.id).join(', #')}: some files could not be removed. Click Delete again to retry.`);
+      poll(); loadBugs();
+    } catch (e) { $('#confirmDel').disabled = false; $('#confirmDel').textContent = 'Delete'; showErr(e.message); }
+  };
+}
+function renderBulk() {
+  const n = (S.picked || new Set()).size;
+  $('#bulkBar').classList.toggle('hide', !n);
+  $('#bulkCount').textContent = `${n} selected`;
+  $('#bulkDel').textContent = `Delete selected (${n})`;
+}
+document.addEventListener('click', e => { const b = e.target.closest('[data-del]'); if (b) askDelete([+b.dataset.del]); });
+$('#dashSessions').addEventListener('change', e => {
+  S.picked = S.picked || new Set();
+  if (e.target.id === 'pickAll') {
+    (S.state?.sessions || []).slice(0, 15).forEach(s => e.target.checked ? S.picked.add(s.id) : S.picked.delete(s.id));
+    $$('#dashSessions [data-pick]').forEach(c => { c.checked = e.target.checked; });
+  } else if (e.target.dataset.pick) {
+    const id = +e.target.dataset.pick; e.target.checked ? S.picked.add(id) : S.picked.delete(id);
+  }
+  renderBulk();
+});
+$('#bulkDel').addEventListener('click', () => { if (S.picked && S.picked.size) askDelete([...S.picked]); });
+$('#bulkClear').addEventListener('click', () => { S.picked = new Set(); $$('#dashSessions input[type=checkbox]').forEach(c => { c.checked = false; }); renderBulk(); });
+$('#deleteBtn').addEventListener('click', () => { if (S.sel) askDelete([S.sel]); });
 
 // ---------------------------------------------------------------- Live monitor
 function runsBoxes(s) {
@@ -418,6 +537,10 @@ function renderLive() {
   const s = d.session, now = st.now, c = d.counts;
   $('#liveStatus').innerHTML = statusPill(s.status) + (s.phase && s.phase !== s.status ? ` <span class="muted small">${esc(s.phase)}</span>` : '');
   $('#cancelBtn').classList.toggle('hide', !['queued', 'running', 'reporting'].includes(s.status));
+  $('#repeatBtn').classList.toggle('hide', ACTIVE.includes(s.status));
+  const db = $('#deleteBtn'); db.classList.toggle('hide', s.delete_state === 'requested' || s.delete_state === 'deleting');
+  db.textContent = ACTIVE.includes(s.status) ? 'Cancel & delete' : s.delete_state === 'incomplete' ? 'Retry delete' : 'Delete session';
+  renderShotDownload(d);
   const total = s.duration_min * 60, used = s.started_at ? Math.min(total, (s.finished_at || now) - s.started_at) : 0;
   $('#lvTime').textContent = s.started_at ? `${mins(used)} of ${s.duration_min} min` : 'not started';
   $('#lvTimeBar span').style.width = (100 * used / total) + '%';
@@ -561,8 +684,18 @@ async function loadReport(force) {
   } catch (e) { $('#repBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   renderReportSide();
 }
+function renderShotDownload(d) {
+  const s = d.session, n = d.shot_count || 0, closed = !['queued', 'running', 'reporting'].includes(s.status);
+  const ready = !!s.shots_every_action && closed && n > 0, href = `/api/sessions/${s.id}/screenshots.zip`;
+  for (const id of ['#shotDl', '#repShotDl']) {
+    const a = $(id); a.classList.toggle('hide', !ready); a.href = href; a.textContent = `Download ${n} screenshot${n === 1 ? '' : 's'} (.zip)`;
+  }
+  $('#shotInfo').textContent = !s.shots_every_action ? '' : !closed ? `📷 ${n} screenshot${n === 1 ? '' : 's'} so far · zip when the session ends`
+    : n ? '' : '📷 no screenshots were taken';
+}
 function renderReportSide() {
   const d = S.state?.selected; if (!d) return;
+  renderShotDownload(d);
   const c = d.counts, s = d.session, sev = {};
   d.suspects.filter(x => x.status === 'confirmed' && !x.duplicate_of).forEach(x => sev[x.severity] = (sev[x.severity] || 0) + 1);
   const pv = c.pages_visited || 0, pt = c.pages_total || 0;

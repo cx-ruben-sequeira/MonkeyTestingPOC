@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from .. import repro
-from . import Agent, render
+from . import Agent, perm_path, render
 
 
 def read_secrets(session_dir) -> dict:
@@ -41,7 +41,7 @@ class Reproducer(Agent):
         return self.work_dir
 
     def allow(self) -> list[str]:
-        w = os.path.normpath(os.path.abspath(os.fspath(self.work_dir)))
+        w = perm_path(self.work_dir)
         return ["mcp__playwright", f"Read(/{w}/**)", f"Edit(/{w}/**)", f"Write(/{w}/**)",
                 "Bash(npx playwright test:*)", "Bash(npx playwright test)"]
 

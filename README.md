@@ -12,37 +12,107 @@ Orchestrator (mtlib/dispatcher.py): one pool of N worker slots shared by all ses
 
 ## Setup
 
-Requires Python 3.11+, Node 18+ and the `claude` CLI, logged in.
+Works the same on **Windows, macOS and Linux**. You need:
+
+- Python 3.11+
+- Node.js 20+
+- The Claude Code CLI (`claude`), logged in
+- git
+- Optional: `gh`, logged in
+
+Run these from the repository folder, in PowerShell, Terminal or any shell:
 
 ```bash
-./install.sh
+pipx install -e .
 ```
 
-This installs the pinned `@playwright/mcp` and `@playwright/test` packages and the Chromium build they use.
+```bash
+mt install
+```
+
+```bash
+mt doctor
+```
+
+- `pipx install -e .` puts the `mt` command on your PATH (`mt.exe` on Windows). It must be an editable install (`-e`), because MonkeyTesting runs out of this folder: `web/`, `hooks/`, `runner/` and `config.toml` live here. `uv tool install -e .` works too. With no pipx at all, use `python -m mtlib` in place of `mt`; on macOS and Linux, `bin/mt` also works.
+- `mt install` installs the pinned `@playwright/mcp` and `@playwright/test` packages in `runner/`, plus the Chromium build they use. On Linux it also installs Chromium's system libraries (`--with-deps`, may ask for sudo); use `mt install --no-deps` to skip that.
+- `mt doctor` prints one line per check: tools and versions, Playwright packages and browser, the `gh` login, the data folder, the server port and Jira. `OK` is fine, `WARN` is optional, and `FIX` says what to do.
+
+OS notes:
+
+- **Windows:** turn on long paths (`mt doctor` prints the PowerShell command when they're off), because run folders can get deep. Hooks are started with the full path of the Python running `mt`, so no shebangs or `.py` file associations are needed.
+- **Linux servers:** no display is needed. Playwright runs headless everywhere.
+- **Paths with spaces** (such as `C:\Program Files\nodejs` or a home folder named `First Last`) are fine. Programs found on PATH are started by name, and worker files are passed relative to the worker's folder. The one case that fails: `MT_DATA_DIR` points outside the repository, and the path between the two contains a space (for example the repo in `C:\code` and the data in `C:\Users\First Last\mt`). The worker then refuses to start with "Refusing unsafe command-line argument". Put the data folder inside the repository, or in a path without spaces.
+
+Secrets and folders:
+
+- **Secrets** are read from environment variables, or from a git-ignored `.env` file next to `config.toml`, so there's no per-shell `export` / `$env:` difference. For example: `JIRA_API_TOKEN=...`
+- **`MT_DATA_DIR`** (in the environment or `.env`) moves `data/`, `runs/` and `logs/` to another folder.
 
 ## Run
 
 ```bash
-bin/mt serve
+mt serve
 ```
 
-Then open http://127.0.0.1:8766. Under **New session**, enter a URL, pick a mode and a duration, and click **Start**.
+Then open http://127.0.0.1:8766. Under **New session**, enter a URL, pick a mode and a duration, and click **Start**. Stop the server with Ctrl+C on any OS: workers are stopped together with their whole process tree (claude → node → chromium).
 
 You can also queue a session from the command line:
 
 ```bash
-bin/mt start https://staging.myapp.com --mode hybrid --minutes 20 --repeats 5
+mt start https://staging.myapp.com --mode hybrid --minutes 20 --repeats 5
 ```
 
 ```bash
-bin/mt status
+mt status
 ```
 
 ```bash
-bin/mt cancel 3
+mt cancel 3
 ```
 
-A session runs only while `bin/mt serve` is running. Interrupted tasks go back to the front of the queue when you restart it.
+A session runs only while `mt serve` is running. Interrupted tasks go back to the front of the queue when you restart it.
+
+### Deleting sessions
+
+Deleting a session removes all of its data and files:
+
+- every database row of the session (tasks, pages, map edges, suspects, bugs, events, usage)
+- its run folder `runs/s<id>/` (videos, screenshots, specs, logs, and the saved credentials, which go first)
+
+Jira tickets the session created are **not** deleted, because they live in Jira. The confirmation lists their keys.
+
+Where to delete:
+
+- **Dashboard:** each row of **Recent sessions** has a 🗑 **Delete** button. Tick several rows to get **Delete selected**. In **Live monitor**, use **Delete session**.
+- **Confirmation:** a dialog shows exactly what goes (bugs, suspects, events, disk space, Jira keys) and that it can't be undone. Nothing is deleted until you click **Delete** there.
+- **Running sessions:** the button becomes **Cancel & delete**. The session is cancelled, and deleted once its workers have stopped.
+- **Incomplete deletes:** if some files can't be removed (for example, locked on Windows), the session stays, shows **delete incomplete**, and you can delete it again to retry.
+
+From the command line (it shows what will go and asks first; `--yes` skips the question):
+
+```bash
+mt delete 3 4
+```
+
+```bash
+mt delete --older-than 30d
+```
+
+```bash
+mt delete --status finished
+```
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `mt: command not found` | Run `pipx ensurepath` and open a new terminal, or use `python -m mtlib`. |
+| `chromium browser` is `FIX` in `mt doctor` | Run `mt install`. On Linux without sudo, run `mt install --no-deps` and have an admin run `npx playwright install-deps chromium` in `runner/`. |
+| Workers fail with "MCP server playwright is failed" | `mt doctor` should show the Playwright packages as `OK`; if it doesn't, run `mt install`. |
+| `claude` is `FIX` | Install Claude Code and run `claude` once to log in. If it isn't on PATH, set `[workers] claude_bin` in `config.toml` to its full path. |
+| `server port` is `WARN` | Another `mt serve` is running, or something else uses the port. Change `[server] port`. |
+| Windows: errors about paths that are too long | Turn on long paths (the command is in `mt doctor`), or set `MT_DATA_DIR` to a short folder such as `C:\mt`. |
 
 ## Roles
 
@@ -91,7 +161,13 @@ The token is read only from the environment and is never stored. **Open in Jira*
 ## Files
 
 ```
-bin/mt                     CLI
+mtlib/cli.py               CLI: `mt` / `python -m mtlib` (serve, start, status, cancel, install, doctor)
+mtlib/setup_tools.py       mt install and mt doctor
+mtlib/proc.py              start/stop process trees on Windows, macOS and Linux
+pyproject.toml             package + `mt` console script (pipx install -e .)
+runner/                    pinned Node packages: Playwright MCP + Playwright Test
+.github/workflows/ci.yml   tests on Ubuntu, macOS and Windows
+bin/mt                     same CLI for macOS/Linux without installing
 config.toml                server, workers, playwright, limits, jira
 mtlib/store.py             SQLite (fixed prepared statements only)
 mtlib/dispatcher.py        pool, session lifecycle, limits, loop guard, retries
@@ -109,7 +185,7 @@ tests/                     unit tests (fake Claude, Jira stub) + demo app with p
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
 The tests use `tests/fake_claude.py`, which streams scripted stream-json, so they spend no tokens. Jira is tested against a local stub. Two tests run real Playwright against the demo app.
@@ -117,7 +193,7 @@ The tests use `tests/fake_claude.py`, which streams scripted stream-json, so the
 To try it end to end, start the demo app:
 
 ```bash
-python3 tests/demo_app/serve.py
+python tests/demo_app/serve.py
 ```
 
 Then start a session on http://localhost:8099. The demo app has these planted bugs:
